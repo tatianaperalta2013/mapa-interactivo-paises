@@ -1,0 +1,12 @@
+{
+  "name": "mapa-interactivo-paises",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Mapa interactivo de países con datos del Banco Mundial",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.js"
+  }
+}

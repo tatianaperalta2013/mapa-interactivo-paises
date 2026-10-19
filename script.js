@@ -2,7 +2,7 @@
 // (antes usábamos data/countries.json como mock, HU04, para no depender
 // de la API mientras se armaba el resto)
 
-const WORLD_BANK_BASE = "https://api.worldbank.org/v2/country";
+const WORLD_BANK_BASE = "/api/worldbank/country";
 
 // Los 3 indicadores que pide HU03, con su código real en la API del Banco Mundial
 const INDICATORS = [
@@ -65,6 +65,9 @@ const ADVANCED_INDICATORS = [
 
 let activePath = null;
 let datosRespaldo = null; // countries.json (HU04), se usa solo si falla la API real
+let selectedIndicatorCode = null;
+let countryRequestId = 0;
+let choroplethRequestId = 0;
 
 // MIDP-21/22: el panel de datos avanzados va del lado izquierdo, debajo
 // del mapa. En vez de agregarlo a mano en index.html, lo creamos acá con
@@ -86,8 +89,8 @@ function ensureAdvancedPanel() {
         arriba a la derecha para acceder, y después elegí un país en el
         mapa.
       </div>`;
-    const mapPanel = document.querySelector(".map-panel");
-    mapPanel.insertAdjacentElement("afterend", panel);
+    const detailsPanel = document.getElementById("country-details");
+    detailsPanel.insertAdjacentElement("afterend", panel);
   }
   return panel;
 }
@@ -120,12 +123,33 @@ function esperar(ms) {
 // del más nuevo al más viejo, "most recent values" — pronunciado "moust
 // ricent vállius", significa "valores más recientes"). La usamos con
 // mrv=1 para "el dato actual" y con mrv=10 para el histórico (MIDP-21/22).
-async function fetchIndicatorSerie(isoCode, indicatorCode, mrv = 1, intentos = 2) {
+async function fetchIndicatorSerie(
+  isoCode,
+  indicatorCode,
+  mrv = 1,
+  intentos = 2,
+  aniosMaximos = null,
+  countryName = null
+) {
+  if (aniosMaximos && !countryName) {
+    throw new Error("Falta el nombre del país para consultar la serie histórica.");
+  }
+
   for (let intento = 1; intento <= intentos; intento++) {
     try {
-      const url = `${WORLD_BANK_BASE}/${isoCode}/indicator/${indicatorCode}?format=json&mrv=${mrv}`;
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const url = aniosMaximos
+        ? `/api/wdi/country/${isoCode}/indicator/${indicatorCode}?country=${encodeURIComponent(countryName)}&years=${aniosMaximos}`
+        : `${WORLD_BANK_BASE}/${isoCode}/indicator/${indicatorCode}?format=json&mrv=${mrv}`;
+      const res = await fetch(url, { cache: "no-store" });
+      if (!res.ok) {
+        let detail = "";
+        try {
+          detail = (await res.json()).error || "";
+        } catch {
+          detail = await res.text();
+        }
+        throw new Error(detail || `HTTP ${res.status}`);
+      }
 
       const json = await res.json();
       // La API devuelve [metadata, datos]. Si el país no existe para la API,
@@ -133,13 +157,22 @@ async function fetchIndicatorSerie(isoCode, indicatorCode, mrv = 1, intentos = 2
       const datos = json[1];
       if (!datos || datos.length === 0) return [];
 
-      // La API los devuelve del año más nuevo al más viejo; los damos
-      // vuelta para mostrar el histórico en orden cronológico. Además
-      // sacamos los años sin dato (value: null).
-      return datos
-        .filter((d) => d.value !== null)
+      const returnedIndicators = datos
+        .map((dato) => dato.indicator?.id)
+        .filter(Boolean);
+      if (returnedIndicators.some((id) => id.toUpperCase() !== indicatorCode.toUpperCase())) {
+        throw new Error("La fuente devolvió datos de otra variable.");
+      }
+
+      const firstYear = aniosMaximos
+        ? new Date().getFullYear() - aniosMaximos + 1
+        : Number.NEGATIVE_INFINITY;
+      const serie = datos
+        .filter((dato) => dato.value !== null && Number(dato.date) >= firstYear)
         .map((d) => ({ valor: d.value, anio: d.date }))
-        .reverse();
+        .sort((a, b) => Number(a.anio) - Number(b.anio));
+      serie.source = json[0]?.source || "Banco Mundial";
+      return serie;
     } catch (err) {
       const esUltimoIntento = intento === intentos;
       if (esUltimoIntento) throw err;
@@ -175,20 +208,204 @@ function renderLoading(name, code) {
     <h2 class="country-name">${name}</h2>
     <div class="no-data-msg">Cargando datos desde el Banco Mundial...</div>
   `;
+  renderHistoryMessage(
+    selectedIndicatorCode
+      ? `${name} — ${INDICATORS.find((item) => item.code === selectedIndicatorCode).label}`
+      : "Historial de la variable",
+    selectedIndicatorCode ? "Cargando historial..." : "Seleccioná un indicador para ver su historial."
+  );
   const avanzadoPanel = ensureAdvancedPanel();
   avanzadoPanel.innerHTML = `<div class="no-data-msg">Cargando...</div>`;
 }
 
-// MIDP-30: selector para elegir una "característica" (reservas, inflación
-// o población). Guarda la elegida en window.caracteristicaSeleccionada
-// (el código del indicador, o null si no hay ninguna) y avisa al resto de
-// la página con el evento "caracteristicachange", así las tareas de colorear
-// el mapa (MIDP-11, 12 y 13) pueden engancharse a esta elección.
-// Por ahora resalta ese dato en el panel de cada país.
+function renderHistoryMessage(title, message, isError = false) {
+  document.getElementById("history-panel").innerHTML = `
+    <h2 class="history-title">${title}</h2>
+    <p class="history-message${isError ? " history-error" : ""}">${message}</p>
+  `;
+}
+
+function dibujarGraficoSerie(name, indicator, serie) {
+  if (!serie || serie.length === 0) {
+    renderHistoryMessage(`${name} — ${indicator.label}`, "No hay datos históricos disponibles para esta variable.");
+    return;
+  }
+
+  const width = 720;
+  const height = 350;
+  const margin = { top: 24, right: 24, bottom: 48, left: 76 };
+  const plotWidth = width - margin.left - margin.right;
+  const plotHeight = height - margin.top - margin.bottom;
+  const values = serie.map((point) => point.valor);
+  const minimum = Math.min(...values);
+  const maximum = Math.max(...values);
+  const padding = (maximum - minimum || Math.abs(maximum) || 1) * 0.12;
+  const domainMinimum = Math.max(0, minimum - padding);
+  const domainMaximum = maximum + padding || 1;
+  const valueRange = domainMaximum - domainMinimum || 1;
+  const x = (index) =>
+    margin.left + (serie.length === 1 ? plotWidth / 2 : (index / (serie.length - 1)) * plotWidth);
+  const y = (value) => margin.top + ((domainMaximum - value) / valueRange) * plotHeight;
+  const compactFormat = new Intl.NumberFormat("es-AR", {
+    notation: "compact",
+    maximumFractionDigits: 1,
+  });
+  const linePath = serie
+    .map((point, index) => `${index === 0 ? "M" : "L"} ${x(index)} ${y(point.valor)}`)
+    .join(" ");
+  const areaPath = `${linePath} L ${x(serie.length - 1)} ${margin.top + plotHeight} L ${x(0)} ${margin.top + plotHeight} Z`;
+  const grid = Array.from({ length: 4 }, (_, index) => {
+    const tickValue = domainMinimum + ((3 - index) / 3) * valueRange;
+    const tickY = y(tickValue);
+    return `
+      <line class="chart-grid" x1="${margin.left}" y1="${tickY}" x2="${width - margin.right}" y2="${tickY}"></line>
+      <text class="chart-axis-label" x="${margin.left - 10}" y="${tickY + 4}" text-anchor="end">${compactFormat.format(tickValue)}</text>`;
+  }).join("");
+  const points = serie.map((point, index) => `
+    <circle class="chart-point" cx="${x(index)}" cy="${y(point.valor)}" r="4">
+      <title>${point.anio}: ${indicator.format(point.valor)}</title>
+    </circle>`).join("");
+  const years = serie.map((point, index) => `
+    <text class="chart-axis-label" x="${x(index)}" y="${height - 16}" text-anchor="middle">${point.anio}</text>`).join("");
+
+  document.getElementById("history-panel").innerHTML = `
+    <h2 class="history-title">${name} — ${indicator.label}</h2>
+    <svg class="history-chart" viewBox="0 0 ${width} ${height}" role="img"
+      aria-label="Historial de ${indicator.label} de ${name}, por año">
+      <defs>
+        <linearGradient id="history-area-gradient" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="var(--accent)" stop-opacity="0.48"></stop>
+          <stop offset="100%" stop-color="var(--accent)" stop-opacity="0.03"></stop>
+        </linearGradient>
+      </defs>
+      ${grid}
+      <path class="chart-area" d="${areaPath}"></path>
+      <path class="chart-line" d="${linePath}"></path>
+      ${points}
+      ${years}
+    </svg>
+    <p class="chart-note">Hasta ${serie.length} observaciones anuales disponibles. Fuente: ${serie.source || "Banco Mundial (WDI)"}.</p>
+  `;
+}
+
+function seleccionarIndicador(indicatorCode, name, historicos) {
+  selectedIndicatorCode = indicatorCode;
+  document.querySelectorAll(".stat-trigger").forEach((button) => {
+    const isSelected = button.dataset.indicator === indicatorCode;
+    button.closest(".stat").classList.toggle("selected-stat", isSelected);
+    button.setAttribute("aria-pressed", String(isSelected));
+  });
+
+  const indicator = INDICATORS.find((item) => item.code === indicatorCode);
+  if (!indicator) return;
+  if (!window.usuarioLogueado) {
+    renderHistoryMessage(
+      `${name} — ${indicator.label}`,
+      "Iniciá sesión para consultar el historial de esta variable."
+    );
+    return;
+  }
+
+  dibujarGraficoSerie(name, indicator, historicos?.[INDICATORS.indexOf(indicator)]);
+}
+
+// MIDP-30: el selector también colorea el mapa según el valor de cada país.
 function aplicarResaltado() {
   document.querySelectorAll("#data-panel .stat").forEach((el) => {
     el.classList.toggle("stat-selected", el.dataset.code === window.caracteristicaSeleccionada);
   });
+}
+
+function colorParaValor(valor, valoresOrdenados) {
+  let inferior = 0;
+  let superior = valoresOrdenados.length;
+  while (inferior < superior) {
+    const medio = Math.floor((inferior + superior) / 2);
+    if (valoresOrdenados[medio] < valor) inferior = medio + 1;
+    else superior = medio;
+  }
+  const inicio = inferior;
+  superior = valoresOrdenados.length;
+  while (inferior < superior) {
+    const medio = Math.floor((inferior + superior) / 2);
+    if (valoresOrdenados[medio] <= valor) inferior = medio + 1;
+    else superior = medio;
+  }
+
+  const rango = valoresOrdenados.length > 1
+    ? ((inicio + inferior - 1) / 2) / (valoresOrdenados.length - 1)
+    : 1;
+  const saturacion = Math.round(30 + rango * 60);
+  const luminosidad = Math.round(28 + rango * 28);
+  return `hsl(140 ${saturacion}% ${luminosidad}%)`;
+}
+
+function aplicarDatosAlMapa(registros) {
+  const valoresPorPais = new Map();
+  for (const registro of registros) {
+    const codigo = registro.country?.id?.toUpperCase();
+    const valor = Number(registro.value);
+    if (codigo && Number.isFinite(valor)) valoresPorPais.set(codigo, valor);
+  }
+
+  const valoresOrdenados = [...valoresPorPais.values()].sort((a, b) => a - b);
+  document.querySelectorAll("#world-map .country").forEach((pais) => {
+    const valor = valoresPorPais.get(pais.dataset.id.toUpperCase());
+    if (valor === undefined) {
+      pais.classList.remove("has-indicator-value");
+      pais.style.removeProperty("--indicator-fill");
+      return;
+    }
+
+    pais.classList.add("has-indicator-value");
+    pais.style.setProperty("--indicator-fill", colorParaValor(valor, valoresOrdenados));
+  });
+}
+
+async function colorearPaises(indicatorCode, info) {
+  const requestId = ++choroplethRequestId;
+  if (!indicatorCode) {
+    aplicarDatosAlMapa([]);
+    info.textContent = "";
+    return;
+  }
+
+  const indicator = INDICATORS.find((item) => item.code === indicatorCode);
+  aplicarDatosAlMapa([]);
+  info.textContent = "Cargando valores por país...";
+  try {
+    const url = `${WORLD_BANK_BASE}/all/indicator/${indicatorCode}?format=json&mrv=1&per_page=400`;
+    const response = await fetch(url, { cache: "no-store" });
+    if (!response.ok) {
+      let detail = "";
+      try {
+        detail = (await response.json()).error || "";
+      } catch {
+        detail = await response.text();
+      }
+      throw new Error(detail || `HTTP ${response.status}`);
+    }
+
+    const payload = await response.json();
+    if (requestId !== choroplethRequestId) return;
+    if (!Array.isArray(payload) || !Array.isArray(payload[1])) {
+      throw new Error("La API devolvió una respuesta de países no válida.");
+    }
+
+    const records = payload[1].filter(
+      (record) => record.indicator?.id?.toUpperCase() === indicatorCode.toUpperCase()
+    );
+    aplicarDatosAlMapa(records);
+    const cantidad = document.querySelectorAll("#world-map .country.has-indicator-value").length;
+    info.textContent = cantidad
+      ? `Color por ${indicator.label.toLowerCase()} en ${cantidad} países.`
+      : "No hay valores disponibles para mostrar.";
+  } catch (error) {
+    if (requestId !== choroplethRequestId) return;
+    console.error("No se pudo colorear el mapa por indicador:", error);
+    aplicarDatosAlMapa([]);
+    info.textContent = `No se pudieron cargar los valores de ${indicator.label.toLowerCase()}.`;
+  }
 }
 
 function ensureSelector() {
@@ -202,15 +419,17 @@ function ensureSelector() {
       <option value="">Ninguna</option>
       ${INDICATORS.map((ind) => `<option value="${ind.code}">${ind.label}</option>`).join("")}
     </select>
-    <span id="caracteristica-info" class="selector-info"></span>`;
+    <span id="caracteristica-info" class="selector-info" aria-live="polite"></span>
+    <span class="choropleth-legend" aria-label="Escala de color: menor a mayor valor">
+      <span>Menor valor</span><span class="choropleth-gradient" aria-hidden="true"></span><span>Mayor valor</span>
+    </span>`;
   document.querySelector(".map-panel").insertAdjacentElement("afterbegin", barra);
 
   const select = document.getElementById("caracteristica-select");
   const info = document.getElementById("caracteristica-info");
   select.addEventListener("change", () => {
     window.caracteristicaSeleccionada = select.value || null;
-    const ind = INDICATORS.find((i) => i.code === select.value);
-    info.textContent = ind ? `Seleccionada: ${ind.label}` : "";
+    colorearPaises(window.caracteristicaSeleccionada, info);
     aplicarResaltado();
     window.dispatchEvent(
       new CustomEvent("caracteristicachange", { detail: { code: window.caracteristicaSeleccionada } })
@@ -300,9 +519,12 @@ function renderCountry(name, code, resultados, historicos, avanzados) {
         : "";
 
     return `
-      <div class="stat" data-code="${ind.code}">
-        <div class="stat-label">${ind.label}</div>
-        <div class="stat-value">${valorMostrado}</div>
+      <div class="stat selectable-stat${selectedIndicatorCode === ind.code ? " selected-stat" : ""}" data-code="${ind.code}">
+        <button class="stat-trigger" type="button" data-indicator="${ind.code}"
+          aria-pressed="${selectedIndicatorCode === ind.code}">
+          <span class="stat-label">${ind.label}</span>
+          <span class="stat-value">${valorMostrado}</span>
+        </button>
         ${historialHtml}
       </div>`;
   }).join("");
@@ -312,7 +534,26 @@ function renderCountry(name, code, resultados, historicos, avanzados) {
     <h2 class="country-name">${name}</h2>
     <div class="stat-list">${stats}</div>
   `;
+  panel.querySelectorAll(".stat-trigger").forEach((button) => {
+    button.addEventListener("click", () => {
+      seleccionarIndicador(button.dataset.indicator, name, historicos);
+    });
+  });
   aplicarResaltado();
+  if (selectedIndicatorCode) {
+    if (window.usuarioLogueado) {
+      const indicator = INDICATORS.find((item) => item.code === selectedIndicatorCode);
+      dibujarGraficoSerie(name, indicator, historicos?.[INDICATORS.indexOf(indicator)]);
+    } else {
+      const indicator = INDICATORS.find((item) => item.code === selectedIndicatorCode);
+      renderHistoryMessage(
+        `${name} — ${indicator.label}`,
+        "Iniciá sesión para consultar el historial de esta variable."
+      );
+    }
+  } else {
+    renderHistoryMessage("Historial de la variable", "Seleccioná reservas, inflación o población para ver su historial.");
+  }
 
   // MIDP-21/22: los datos avanzados van en el panel de la izquierda,
   // debajo del mapa (no acá, en el panel de la derecha).
@@ -398,6 +639,7 @@ function renderCountryRespaldo(name, code, datos) {
     <div class="no-data-msg">
       No se pudieron pedir los datos avanzados porque la API no respondió.
     </div>`;
+  renderHistoryMessage("Historial de la variable", "El historial no está disponible mientras se muestran datos de respaldo.");
 }
 
 function renderError(name, code, path) {
@@ -415,6 +657,7 @@ function renderError(name, code, path) {
   document.getElementById("retry-btn").addEventListener("click", () => {
     onCountryClick({ currentTarget: path });
   });
+  renderHistoryMessage("Historial de la variable", "No se puede mostrar el historial porque no se pudo conectar con el servidor.");
   const avanzadoPanel = ensureAdvancedPanel();
   avanzadoPanel.innerHTML = `
     <div class="no-data-msg">
@@ -426,6 +669,7 @@ async function onCountryClick(evt) {
   const path = evt.currentTarget;
   const code = path.dataset.id;
   const name = path.dataset.name || code;
+  const requestId = ++countryRequestId;
 
   if (activePath) activePath.classList.remove("active");
   path.classList.add("active");
@@ -435,6 +679,7 @@ async function onCountryClick(evt) {
 
   try {
     const resultados = await fetchCountryData(code);
+    if (requestId !== countryRequestId) return;
 
     // window.usuarioLogueado lo actualiza auth.js cada vez que Firebase
     // detecta que alguien inició o cerró sesión.
@@ -443,18 +688,27 @@ async function onCountryClick(evt) {
     if (window.usuarioLogueado) {
       historicos = [];
       for (const ind of INDICATORS) {
-        historicos.push(await fetchIndicatorSerie(code, ind.code, 10));
+        try {
+          historicos.push(await fetchIndicatorSerie(code, ind.code, 1, 2, 10, name));
+        } catch (err) {
+          console.error(`No se pudo cargar el historial de ${ind.code}:`, err);
+          historicos.push([]);
+        }
+        if (requestId !== countryRequestId) return;
       }
       avanzados = [];
       for (const ind of ADVANCED_INDICATORS) {
         avanzados.push(await fetchIndicator(code, ind.code));
+        if (requestId !== countryRequestId) return;
       }
     }
 
     renderCountry(name, code, resultados, historicos, avanzados);
   } catch (err) {
+    if (requestId !== countryRequestId) return;
     console.error(err);
     const respaldo = await cargarRespaldo();
+    if (requestId !== countryRequestId) return;
     if (respaldo[code]) {
       renderCountryRespaldo(name, code, respaldo[code]);
     } else {

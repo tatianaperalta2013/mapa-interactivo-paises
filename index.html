@@ -253,13 +253,21 @@
     </svg>
   </div>
 
-  <div class="data-panel" id="data-panel">
-    <div class="empty-state">
-      <strong>Ningún país seleccionado</strong>
-      Elegí un país del mapa para ver sus datos. Los países resaltados
-      ya tienen datos de prueba cargados.
+  <section class="country-details" id="country-details" aria-label="Datos e historial del país">
+    <div class="detail-panels">
+      <section class="data-panel" id="data-panel" aria-label="Datos generales del país">
+        <div class="empty-state">
+          <strong>Ningún país seleccionado</strong>
+          Elegí un país del mapa para ver sus datos. Los países resaltados
+          ya tienen datos de prueba cargados.
+        </div>
+      </section>
+      <section class="history-panel" id="history-panel" aria-live="polite" aria-label="Historial de la variable seleccionada">
+        <h2 class="history-title">Historial de la variable</h2>
+        <p class="history-message">Elegí un país e iniciá sesión para ver el historial de un indicador.</p>
+      </section>
     </div>
-  </div>
+  </section>
 </main>
 
 <footer>

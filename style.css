@@ -532,7 +532,7 @@ footer a {
   height: 12px;
   border: 1px solid var(--panel-border);
   border-radius: 3px;
-  background: linear-gradient(to right, hsl(140 30% 28%), hsl(140 90% 56%));
+  background: linear-gradient(to right, #FF0000, #00FF00);
 }
 
 .stat-selected {

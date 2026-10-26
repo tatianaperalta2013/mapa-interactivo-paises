@@ -33,7 +33,7 @@ body {
 }
 
 header {
-  padding: 28px clamp(20px, 4vw, 56px) 18px;
+  padding: 28px max(56px, calc((100% - 1280px) / 2)) 18px;
   border-bottom: 1px solid var(--ocean-line);
 }
 
@@ -47,7 +47,7 @@ header {
 
 h1 {
   font-family: var(--mono);
-  font-size: clamp(22px, 3vw, 30px);
+  font-size: 30px;
   font-weight: 600;
   margin: 0;
   letter-spacing: 0.01em;
@@ -57,7 +57,7 @@ h1 {
   margin: 8px 0 0;
   color: var(--text-muted);
   font-size: 14.5px;
-  max-width: 62ch;
+  max-width: 110ch;
   line-height: 1.5;
 }
 
@@ -66,7 +66,8 @@ main {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 24px;
-  padding: 24px clamp(20px, 4vw, 56px) 40px;
+  padding: 24px max(56px, calc((100% - 1280px) / 2)) 40px;
+
   align-items: start;
 }
 
@@ -223,7 +224,7 @@ main {
   stroke-width: 2;
 }
 
-@media (max-width: 860px) {
+@media (max-width: 700px) {
   .detail-panels {
     grid-template-columns: 1fr;
   }
@@ -315,7 +316,7 @@ main {
 }
 
 footer {
-  padding: 14px clamp(20px, 4vw, 56px) 22px;
+  padding: 14px max(56px, calc((100% - 1280px) / 2)) 22px;
   color: var(--text-muted);
   font-size: 12px;
   border-top: 1px solid var(--ocean-line);
@@ -482,10 +483,24 @@ footer a {
   border-bottom: 1px solid var(--ocean-line);
 }
 
+/* MIDP-29 (zoom): en pantallas grandes el contenido tiene un ancho mínimo,
+   así al hacer zoom todo se agranda o se achica junto (y aparece scroll horizontal). */
+@media (min-width: 701px) {
+  body {
+    min-width: 1392px;
+  }
+}
+
+/* Celulares: márgenes y título más chicos */
 @media (max-width: 700px) {
+  header,
+  main,
   footer {
     padding-left: 20px;
     padding-right: 20px;
+  }
+  h1 {
+    font-size: 24px;
   }
 }
 
@@ -541,4 +556,68 @@ footer a {
   padding-left: 8px;
   padding-right: 8px;
   border-radius: 4px;
+}
+
+/* MIDP-24: datos avanzados con gráfico de 10 años al lado */
+
+.adv-stat {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  gap: 24px;
+  align-items: center;
+}
+
+.adv-change {
+  margin-top: 6px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+.adv-chart {
+  width: 100%;
+  height: auto;
+  display: block;
+  overflow: visible;
+}
+
+.adv-chart-wrap {
+  padding: 0 20px;
+}
+
+@media (max-width: 700px) {
+  .adv-stat {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .adv-chart-wrap {
+    padding: 0;
+  }
+}
+
+/* Título de datos avanzados: centrado y más grande */
+.adv-title {
+  text-align: center;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  margin: 36px 0 18px;
+}
+
+/* Datos de cada fila avanzada: más grandes para acompañar al gráfico */
+.adv-info .stat-label {
+  font-size: 15px;
+}
+
+.adv-info .stat-value {
+  font-size: 30px;
+  margin-top: 6px;
+}
+
+.adv-info .stat-year {
+  font-size: 15px;
+}
+
+.adv-change {
+  font-size: 14px;
 }

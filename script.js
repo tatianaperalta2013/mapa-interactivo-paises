@@ -427,6 +427,133 @@ function ensureSelector() {
       new CustomEvent("caracteristicachange", { detail: { code: window.caracteristicaSeleccionada } })
     );
   });
+  mostrarOcultarSelector();
+}
+
+// El selector "Característica a destacar" es solo para usuarios registrados:
+// sin sesión iniciada no se ve, y si estaba usando una característica la
+// sacamos para que el mapa vuelva a su color normal.
+function mostrarOcultarSelector() {
+  const barra = document.querySelector(".selector-barra");
+  if (!barra) return;
+  const logueado = !!window.usuarioLogueado;
+  barra.style.display = logueado ? "" : "none";
+  if (!logueado) {
+    const select = document.getElementById("caracteristica-select");
+    if (select && select.value) {
+      select.value = "";
+      select.dispatchEvent(new Event("change"));
+    }
+  }
+}
+
+// MIDP-19 / MIDP-24: SIEMPRE los últimos 10 años de cada dato, y gráfico
+// al lado de cada dato avanzado.
+//
+// fetchUltimos10 pide una serie larga (hasta 30 años) y se queda con los
+// 10 años más recientes CON dato (el último año disponible hacia atrás).
+// Primero lo intenta con el servidor de Luciano (/api/wdi) y, si no
+// alcanzan 10 años, lo completa pidiéndole al Banco Mundial muchos períodos.
+async function fetchUltimos10(isoCode, indicatorCode, countryName) {
+  const recortar = (serie) => {
+    if (!serie || serie.length === 0) return [];
+    const ultimoAnio = Number(serie[serie.length - 1].anio);
+    const recorte = serie.filter((punto) => Number(punto.anio) > ultimoAnio - 10);
+    recorte.source = serie.source;
+    return recorte;
+  };
+
+  let mejor = [];
+  for (const anios of [20, 15, 10]) {
+    try {
+      mejor = recortar(await fetchIndicatorSerie(isoCode, indicatorCode, 1, 1, anios, countryName));
+      break;
+    } catch (err) {
+      console.warn(`Serie de ${indicatorCode} con ${anios} años no disponible:`, err.message);
+    }
+  }
+  if (mejor.length >= 10) return mejor;
+
+  try {
+    const alternativa = recortar(await fetchIndicatorSerie(isoCode, indicatorCode, 30, 2));
+    if (alternativa.length > mejor.length) mejor = alternativa;
+  } catch (err) {
+    console.warn(`No se pudo completar la serie de ${indicatorCode}:`, err);
+  }
+  return mejor;
+}
+
+// Dibuja el gráfico (SVG, "scalable vector graphics", pronunciado "escéilabol
+// véctor gráfics", significa "gráficos vectoriales": dibujos hechos con
+// líneas que se ven nítidos a cualquier tamaño) de UN dato avanzado.
+// Tiene: área y línea de los últimos 10 años, eje con valores, años abajo,
+// el último punto resaltado con su valor y un cartelito al pasar el mouse.
+function graficoAvanzadoHtml(indicator, serie, indice) {
+  if (!serie || serie.length < 2) {
+    return `<p class="chart-note">${
+      serie && serie.length === 1
+        ? "Hay un solo dato disponible en los últimos 10 años: no alcanza para graficar."
+        : "No hay datos de los últimos 10 años para graficar."
+    }</p>`;
+  }
+
+  const width = 720;
+  const height = 350;
+  const margin = { top: 24, right: 24, bottom: 48, left: 76 };
+  const plotWidth = width - margin.left - margin.right;
+  const plotHeight = height - margin.top - margin.bottom;
+  const valores = serie.map((punto) => punto.valor);
+  const minimo = Math.min(...valores);
+  const maximo = Math.max(...valores);
+  const relleno = (maximo - minimo || Math.abs(maximo) || 1) * 0.15;
+  const dominioMin = minimo >= 0 ? Math.max(0, minimo - relleno) : minimo - relleno;
+  const dominioMax = maximo + relleno;
+  const rango = dominioMax - dominioMin || 1;
+  const x = (i) => margin.left + (i / (serie.length - 1)) * plotWidth;
+  const y = (v) => margin.top + ((dominioMax - v) / rango) * plotHeight;
+  const compacto = new Intl.NumberFormat("es-AR", { notation: "compact", maximumFractionDigits: 1 });
+
+  const linea = serie.map((p, i) => `${i === 0 ? "M" : "L"} ${x(i)} ${y(p.valor)}`).join(" ");
+  const base = margin.top + plotHeight;
+  const area = `${linea} L ${x(serie.length - 1)} ${base} L ${x(0)} ${base} Z`;
+
+  const grilla = Array.from({ length: 4 }, (_, k) => {
+    const valor = dominioMin + ((3 - k) / 3) * rango;
+    return `
+      <line class="chart-grid" x1="${margin.left}" y1="${y(valor)}" x2="${width - margin.right}" y2="${y(valor)}"></line>
+      <text class="chart-axis-label" x="${margin.left - 10}" y="${y(valor) + 4}" text-anchor="end">${compacto.format(valor)}</text>`;
+  }).join("");
+
+  const ultimo = serie.length - 1;
+  const puntos = serie.map((p, i) => `
+    <circle class="chart-point" cx="${x(i)}" cy="${y(p.valor)}" r="${i === ultimo ? 6 : 4}">
+      <title>${p.anio}: ${indicator.format(p.valor)}</title>
+    </circle>`).join("");
+
+  // Años: el último y uno por medio hacia atrás, para que no se amontonen.
+  const anios = serie.map((p, i) => `<text class="chart-axis-label" x="${x(i)}" y="${height - 16}" text-anchor="middle">${p.anio}</text>`).join("");
+
+  const etiquetaUltimo = `
+    <text class="chart-axis-label" x="${x(ultimo)}" y="${y(serie[ultimo].valor) - 12}" text-anchor="end"
+      style="fill: var(--accent); font-weight: 600;">${compacto.format(serie[ultimo].valor)}</text>`;
+
+  const idDegradado = `adv-grad-${indice}`;
+  return `
+    <svg class="adv-chart" viewBox="0 0 ${width} ${height}" role="img"
+      aria-label="${indicator.label}: evolución de los últimos 10 años, de ${serie[0].anio} a ${serie[ultimo].anio}">
+      <defs>
+        <linearGradient id="${idDegradado}" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="var(--accent)" stop-opacity="0.45"></stop>
+          <stop offset="100%" stop-color="var(--accent)" stop-opacity="0.03"></stop>
+        </linearGradient>
+      </defs>
+      ${grilla}
+      <path d="${area}" fill="url(#${idDegradado})"></path>
+      <path class="chart-line" d="${linea}"></path>
+      ${puntos}
+      ${etiquetaUltimo}
+      ${anios}
+    </svg>`;
 }
 
 // MIDP-19: el usuario con sesión iniciada puede bajar el historial en datos
@@ -435,7 +562,7 @@ function ensureSelector() {
 // un archivo de texto que se abre directo en Excel).
 // Usamos ";" como separador y coma decimal porque así lo espera Excel en
 // español, y le agregamos "﻿" al principio para que respete las tildes.
-function descargarHistorialCSV(name, code, historicos, avanzados) {
+function descargarHistorialCSV(name, code, historicos, avanzados, seriesAvanzadas) {
   const num = (v) => String(v).replace(".", ",");
   const filas = [["Pais", "Codigo", "Indicador", "Anio", "Valor"]];
 
@@ -445,8 +572,12 @@ function descargarHistorialCSV(name, code, historicos, avanzados) {
     });
   });
   ADVANCED_INDICATORS.forEach((ind, i) => {
-    const r = avanzados[i];
-    if (r) filas.push([name, code, ind.label, r.anio, num(r.valor)]);
+    const serie = seriesAvanzadas ? seriesAvanzadas[i] : null;
+    if (serie && serie.length > 0) {
+      serie.forEach((h) => filas.push([name, code, ind.label, h.anio, num(h.valor)]));
+    } else if (avanzados[i]) {
+      filas.push([name, code, ind.label, avanzados[i].anio, num(avanzados[i].valor)]);
+    }
   });
 
   const csv = filas
@@ -491,7 +622,7 @@ function enviarSugerencia(texto) {
 //   INDICATORS con la serie de hasta 10 años de cada uno
 // avanzados: null si no hay sesión iniciada, o array paralelo a
 //   ADVANCED_INDICATORS con el dato más reciente de cada uno
-function renderCountry(name, code, resultados, historicos, avanzados) {
+function renderCountry(name, code, resultados, historicos, avanzados, seriesAvanzadas) {
   const panel = document.getElementById("data-panel");
 
   const stats = INDICATORS.map((ind, i) => {
@@ -553,12 +684,31 @@ function renderCountry(name, code, resultados, historicos, avanzados) {
   if (avanzados) {
     const avanzadosHtml = ADVANCED_INDICATORS.map((ind, i) => {
       const r = avanzados[i];
+      const serie = seriesAvanzadas ? seriesAvanzadas[i] : null;
       const valorMostrado =
         r && r.valor !== null ? `${ind.format(r.valor)} <span class="stat-year">(${r.anio})</span>` : "Sin datos disponibles";
+
+      // Variación entre el primer y el último año de la serie.
+      let cambioHtml = "";
+      if (serie && serie.length >= 2 && serie[0].valor !== 0) {
+        const primero = serie[0];
+        const ultimo = serie[serie.length - 1];
+        const cambio = ((ultimo.valor - primero.valor) / Math.abs(primero.valor)) * 100;
+        const cambioTexto = new Intl.NumberFormat("es-AR", {
+          maximumFractionDigits: 1,
+          signDisplay: "exceptZero",
+        }).format(cambio);
+        cambioHtml = `<div class="adv-change">${cambio >= 0 ? "▲" : "▼"} ${cambioTexto} % entre ${primero.anio} y ${ultimo.anio}</div>`;
+      }
+
       return `
-        <div class="stat">
-          <div class="stat-label">${ind.label}</div>
-          <div class="stat-value">${valorMostrado}</div>
+        <div class="stat adv-stat">
+          <div class="adv-info">
+            <div class="stat-label">${ind.label}</div>
+            <div class="stat-value">${valorMostrado}</div>
+            ${cambioHtml}
+          </div>
+          <div class="adv-chart-wrap">${serie ? graficoAvanzadoHtml(ind, serie, i) : ""}</div>
         </div>`;
     }).join("");
     // MIDP-19 y MIDP-24: hay dos tipos de usuario con sesión iniciada.
@@ -579,13 +729,13 @@ function renderCountry(name, code, resultados, historicos, avanzados) {
          </div>`;
 
     avanzadoPanel.innerHTML = `
-      <p class="section-label">Datos avanzados de ${name} (usuario ${esPremium ? "premium" : "registrado"})</p>
+      <p class="section-label adv-title">Datos avanzados de ${name} (usuario ${esPremium ? "premium" : "registrado"})</p>
       <div class="stat-list">${avanzadosHtml}</div>
       ${premiumHtml}`;
 
     if (esPremium) {
       document.getElementById("download-btn").addEventListener("click", () => {
-        descargarHistorialCSV(name, code, historicos, avanzados);
+        descargarHistorialCSV(name, code, historicos, avanzados, seriesAvanzadas);
       });
       document.getElementById("suggest-btn").addEventListener("click", () => {
         enviarSugerencia(document.getElementById("suggest-text").value);
@@ -677,25 +827,31 @@ async function onCountryClick(evt) {
     // detecta que alguien inició o cerró sesión.
     let historicos = null;
     let avanzados = null;
+    let seriesAvanzadas = null;
     if (window.usuarioLogueado) {
       historicos = [];
       for (const ind of INDICATORS) {
         try {
-          historicos.push(await fetchIndicatorSerie(code, ind.code, 1, 2, 10, name));
+          historicos.push(await fetchUltimos10(code, ind.code, name));
         } catch (err) {
           console.error(`No se pudo cargar el historial de ${ind.code}:`, err);
           historicos.push([]);
         }
         if (requestId !== countryRequestId) return;
       }
+      // Cada dato avanzado: serie de los últimos 10 años (para el gráfico);
+      // el valor actual es el último punto de esa serie.
       avanzados = [];
+      seriesAvanzadas = [];
       for (const ind of ADVANCED_INDICATORS) {
-        avanzados.push(await fetchIndicator(code, ind.code));
+        const serie = await fetchUltimos10(code, ind.code, name);
+        seriesAvanzadas.push(serie);
+        avanzados.push(serie.length > 0 ? serie[serie.length - 1] : null);
         if (requestId !== countryRequestId) return;
       }
     }
 
-    renderCountry(name, code, resultados, historicos, avanzados);
+    renderCountry(name, code, resultados, historicos, avanzados, seriesAvanzadas);
   } catch (err) {
     if (requestId !== countryRequestId) return;
     console.error(err);
@@ -723,5 +879,6 @@ document.addEventListener("DOMContentLoaded", wireMapEvents);
 // si ya había un país seleccionado, lo volvemos a cargar para que
 // aparezcan/desaparezcan los datos avanzados sin tener que reclickear.
 window.addEventListener("authchange", () => {
+  mostrarOcultarSelector();
   if (activePath) onCountryClick({ currentTarget: activePath });
 });

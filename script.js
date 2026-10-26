@@ -317,27 +317,19 @@ function aplicarResaltado() {
 }
 
 function colorParaValor(valor, valoresOrdenados) {
-  let inferior = 0;
-  let superior = valoresOrdenados.length;
-  while (inferior < superior) {
-    const medio = Math.floor((inferior + superior) / 2);
-    if (valoresOrdenados[medio] < valor) inferior = medio + 1;
-    else superior = medio;
-  }
-  const inicio = inferior;
-  superior = valoresOrdenados.length;
-  while (inferior < superior) {
-    const medio = Math.floor((inferior + superior) / 2);
-    if (valoresOrdenados[medio] <= valor) inferior = medio + 1;
-    else superior = medio;
-  }
-
-  const rango = valoresOrdenados.length > 1
-    ? ((inicio + inferior - 1) / 2) / (valoresOrdenados.length - 1)
-    : 1;
-  const saturacion = Math.round(30 + rango * 60);
-  const luminosidad = Math.round(28 + rango * 28);
-  return `hsl(140 ${saturacion}% ${luminosidad}%)`;
+  // MIDP-11: escala lineal entre el valor mínimo (rojo) y máximo (verde).
+  // No usamos la posición en el ranking: el color depende del valor real.
+  if (valoresOrdenados.length === 0) return "#33505f";
+  const minimo = valoresOrdenados[0];
+  const maximo = valoresOrdenados[valoresOrdenados.length - 1];
+  // Si todos los países tienen el mismo valor, usamos un color intermedio.
+  const proporcion = maximo === minimo
+    ? 0.5
+    : Math.max(0, Math.min(1, (valor - minimo) / (maximo - minimo)));
+  const rojo = Math.round(255 * (1 - proporcion));
+  const verde = Math.round(255 * proporcion);
+  const hexadecimal = (canal) => canal.toString(16).padStart(2, "0").toUpperCase();
+  return `#${hexadecimal(rojo)}${hexadecimal(verde)}00`;
 }
 
 function aplicarDatosAlMapa(registros) {

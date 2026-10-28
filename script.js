@@ -68,6 +68,7 @@ let datosRespaldo = null; // countries.json (HU04), se usa solo si falla la API 
 let selectedIndicatorCode = null;
 let countryRequestId = 0;
 let choroplethRequestId = 0;
+let valoresDelMapa = new Map(); // código de país -> valor de la característica elegida
 
 // MIDP-21/22: el panel de datos avanzados va del lado izquierdo, debajo
 // del mapa. En vez de agregarlo a mano en index.html, lo creamos acá con
@@ -206,7 +207,10 @@ function renderLoading(name, code) {
   panel.innerHTML = `
     <p class="country-code">${code}</p>
     <h2 class="country-name">${name}</h2>
-    <div class="no-data-msg">Cargando datos desde el Banco Mundial...</div>
+    <div class="cargando" role="status">
+      <span class="spinner" aria-hidden="true"></span>
+      <span id="progreso-carga">Cargando datos desde el Banco Mundial...</span>
+    </div>
   `;
   renderHistoryMessage(
     selectedIndicatorCode
@@ -215,7 +219,17 @@ function renderLoading(name, code) {
     selectedIndicatorCode ? "Cargando historial..." : "Seleccioná un indicador para ver su historial."
   );
   const avanzadoPanel = ensureAdvancedPanel();
-  avanzadoPanel.innerHTML = `<div class="no-data-msg">Cargando...</div>`;
+  avanzadoPanel.innerHTML = `
+    <div class="cargando" role="status">
+      <span class="spinner" aria-hidden="true"></span>
+      <span>Cargando datos avanzados, puede tardar unos segundos...</span>
+    </div>`;
+}
+
+// Actualiza el texto de la ruedita de carga ("Cargando dato 3 de 9...").
+function actualizarProgreso(hecho, total) {
+  const el = document.getElementById("progreso-carga");
+  if (el) el.textContent = `Cargando datos históricos: ${hecho} de ${total}...`;
 }
 
 function renderHistoryMessage(title, message, isError = false) {
@@ -316,8 +330,26 @@ function aplicarResaltado() {
   });
 }
 
+// Escala de color apta para daltónicos (tipo "viridis"): va de violeta
+// (valor menor) a amarillo (valor mayor) pasando por azul y verde. Se
+// distingue bien con todos los tipos de daltonismo, a diferencia del
+// rojo-verde que usábamos antes. Ver también .choropleth-gradient en style.css.
+const PALETA_DALTONICOS = ["#46327E", "#365C8D", "#277F8E", "#1FA187", "#4AC16D", "#9FDA3A", "#FDE725"];
+
+function colorEnPaleta(proporcion) {
+  const tramos = PALETA_DALTONICOS.length - 1;
+  const posicion = Math.max(0, Math.min(1, proporcion)) * tramos;
+  const i = Math.min(Math.floor(posicion), tramos - 1);
+  const t = posicion - i;
+  const canal = (hex, k) => parseInt(hex.slice(1 + 2 * k, 3 + 2 * k), 16);
+  const mezcla = (k) =>
+    Math.round(canal(PALETA_DALTONICOS[i], k) * (1 - t) + canal(PALETA_DALTONICOS[i + 1], k) * t);
+  const hexadecimal = (n) => n.toString(16).padStart(2, "0").toUpperCase();
+  return `#${hexadecimal(mezcla(0))}${hexadecimal(mezcla(1))}${hexadecimal(mezcla(2))}`;
+}
+
 function colorParaValor(valor, valoresOrdenados) {
-  // MIDP-11: escala lineal entre el valor mínimo (rojo) y máximo (verde).
+  // MIDP-11: escala lineal entre el valor mínimo y el máximo.
   // No usamos la posición en el ranking: el color depende del valor real.
   if (valoresOrdenados.length === 0) return "#33505f";
   const minimo = valoresOrdenados[0];
@@ -326,10 +358,7 @@ function colorParaValor(valor, valoresOrdenados) {
   const proporcion = maximo === minimo
     ? 0.5
     : Math.max(0, Math.min(1, (valor - minimo) / (maximo - minimo)));
-  const rojo = Math.round(255 * (1 - proporcion));
-  const verde = Math.round(255 * proporcion);
-  const hexadecimal = (canal) => canal.toString(16).padStart(2, "0").toUpperCase();
-  return `#${hexadecimal(rojo)}${hexadecimal(verde)}00`;
+  return colorEnPaleta(proporcion);
 }
 
 function aplicarDatosAlMapa(registros) {
@@ -340,6 +369,7 @@ function aplicarDatosAlMapa(registros) {
     if (codigo && Number.isFinite(valor)) valoresPorPais.set(codigo, valor);
   }
 
+  valoresDelMapa = valoresPorPais; // lo usa el cartelito al pasar el mouse
   const valoresOrdenados = [...valoresPorPais.values()].sort((a, b) => a - b);
   document.querySelectorAll("#world-map .country").forEach((pais) => {
     const valor = valoresPorPais.get(pais.dataset.id.toUpperCase());
@@ -364,7 +394,7 @@ async function colorearPaises(indicatorCode, info) {
 
   const indicator = INDICATORS.find((item) => item.code === indicatorCode);
   aplicarDatosAlMapa([]);
-  info.textContent = "Cargando valores por país...";
+  info.textContent = "⏳ Cargando valores por país...";
   try {
     const url = `${WORLD_BANK_BASE}/all/indicator/${indicatorCode}?format=json&mrv=1&per_page=400`;
     const response = await fetch(url, { cache: "no-store" });
@@ -829,6 +859,9 @@ async function onCountryClick(evt) {
     let avanzados = null;
     let seriesAvanzadas = null;
     if (window.usuarioLogueado) {
+      const totalPasos = INDICATORS.length + ADVANCED_INDICATORS.length;
+      let pasosHechos = 0;
+      actualizarProgreso(pasosHechos, totalPasos);
       historicos = [];
       for (const ind of INDICATORS) {
         try {
@@ -838,6 +871,7 @@ async function onCountryClick(evt) {
           historicos.push([]);
         }
         if (requestId !== countryRequestId) return;
+        actualizarProgreso(++pasosHechos, totalPasos);
       }
       // Cada dato avanzado: serie de los últimos 10 años (para el gráfico);
       // el valor actual es el último punto de esa serie.
@@ -848,6 +882,7 @@ async function onCountryClick(evt) {
         seriesAvanzadas.push(serie);
         avanzados.push(serie.length > 0 ? serie[serie.length - 1] : null);
         if (requestId !== countryRequestId) return;
+        actualizarProgreso(++pasosHechos, totalPasos);
       }
     }
 
@@ -865,12 +900,234 @@ async function onCountryClick(evt) {
   }
 }
 
+// ---------------------------------------------------------------
+// Nombres en español + buscador de países + cartelito (tooltip).
+// ---------------------------------------------------------------
+
+// Pasa a minúsculas y saca los acentos, para que "perú" encuentre "Peru".
+function normalizarTexto(texto) {
+  return String(texto).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+}
+
+let paisesBuscables = []; // { path, es, en, buscar }
+
+function nombreEnEspanol(path) {
+  try {
+    const nombre = new Intl.DisplayNames(["es"], { type: "region" }).of(path.dataset.id.toUpperCase());
+    if (nombre && nombre !== path.dataset.id.toUpperCase()) return nombre;
+  } catch {
+    // Código de país raro: usamos el nombre original.
+  }
+  return path.dataset.name || path.dataset.id;
+}
+
+function armarIndicePaises() {
+  paisesBuscables = [...document.querySelectorAll("#world-map .country")].map((path) => {
+    const es = nombreEnEspanol(path);
+    const en = path.dataset.name || "";
+    return { path, es, en, buscar: normalizarTexto(`${es} ${en}`) };
+  });
+}
+
+// Cuadro con el país solo: al buscar un país se abre arriba del mapa mundi
+// (que queda de fondo, oscurecido) un cuadrado más chico con la forma del
+// país en grande. Se cierra con la X, con Esc o haciendo click afuera.
+function cerrarPaisAmpliado() {
+  document.getElementById("pais-ampliado")?.remove();
+}
+
+function mostrarPaisAmpliado(pais) {
+  cerrarPaisAmpliado();
+  const mapa = document.getElementById("world-map");
+  const panel = document.querySelector(".map-panel");
+
+  // viewBox ajustado a la forma del país, con un margen alrededor.
+  const caja = pais.path.getBBox();
+  const margen = Math.max(caja.width, caja.height) * 0.08 + 4;
+  const viewBox = `${caja.x - margen} ${caja.y - margen} ${caja.width + margen * 2} ${caja.height + margen * 2}`;
+
+  // Si hay una característica elegida, mostramos el valor del país.
+  const indicador = INDICATORS.find((i) => i.code === window.caracteristicaSeleccionada);
+  let detalle = "";
+  if (indicador) {
+    const valor = valoresDelMapa.get(pais.path.dataset.id.toUpperCase());
+    detalle = valor === undefined
+      ? `${indicador.label}: sin datos`
+      : `${indicador.label}: ${indicador.format(valor)}`;
+  }
+
+  const relleno = pais.path.style.getPropertyValue("--indicator-fill") || "var(--accent)";
+  const overlay = document.createElement("div");
+  overlay.id = "pais-ampliado";
+  overlay.className = "pais-ampliado";
+  // Cubre justo la zona del mapa mundi (no el buscador ni el selector).
+  const rMapa = mapa.getBoundingClientRect();
+  const rPanel = panel.getBoundingClientRect();
+  overlay.style.top = `${rMapa.top - rPanel.top - panel.clientTop}px`;
+  overlay.style.left = `${rMapa.left - rPanel.left - panel.clientLeft}px`;
+  overlay.style.width = `${rMapa.width}px`;
+  overlay.style.height = `${rMapa.height}px`;
+  overlay.innerHTML = `
+    <div class="pais-ampliado-caja" role="dialog" aria-label="${pais.es}">
+      <button type="button" class="pais-ampliado-cerrar" aria-label="Cerrar">✕</button>
+      <h3 class="pais-ampliado-titulo">${pais.es}</h3>
+      ${detalle ? `<p class="pais-ampliado-detalle">${detalle}</p>` : ""}
+      <svg class="pais-ampliado-svg" viewBox="${viewBox}" preserveAspectRatio="xMidYMid meet"
+           xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Forma de ${pais.es}">
+        <path d="${pais.path.getAttribute("d")}" style="fill: ${relleno}"></path>
+      </svg>
+    </div>`;
+  panel.appendChild(overlay);
+
+  overlay.addEventListener("click", (evt) => {
+    if (evt.target === overlay || evt.target.closest(".pais-ampliado-cerrar")) cerrarPaisAmpliado();
+  });
+}
+
+document.addEventListener("keydown", (evt) => {
+  if (evt.key === "Escape") cerrarPaisAmpliado();
+});
+
+function seleccionarPaisDesdeBuscador(pais) {
+  onCountryClick({ currentTarget: pais.path });
+  mostrarPaisAmpliado(pais);
+}
+
+function ensureBuscador() {
+  if (document.getElementById("buscador-pais")) return;
+
+  const barra = document.createElement("div");
+  barra.className = "buscador-barra";
+  barra.innerHTML = `
+    <label for="buscador-pais">Buscar país:</label>
+    <div class="buscador-caja">
+      <input id="buscador-pais" class="buscador-input" type="search" autocomplete="off"
+             placeholder="Escribí un país, por ejemplo Argentina..."
+             role="combobox" aria-expanded="false" aria-controls="buscador-lista">
+      <ul id="buscador-lista" class="buscador-lista hidden" role="listbox"></ul>
+    </div>`;
+  document.querySelector(".map-panel").insertAdjacentElement("afterbegin", barra);
+
+  const input = document.getElementById("buscador-pais");
+  const lista = document.getElementById("buscador-lista");
+  let resultados = [];
+  let marcado = -1;
+
+  const cerrar = () => {
+    lista.classList.add("hidden");
+    input.setAttribute("aria-expanded", "false");
+    marcado = -1;
+  };
+  const pintarMarcado = () => {
+    [...lista.children].forEach((li, i) => li.classList.toggle("marcado", i === marcado));
+  };
+  const elegir = (pais) => {
+    input.value = pais.es;
+    cerrar();
+    seleccionarPaisDesdeBuscador(pais);
+  };
+  const mostrar = () => {
+    const texto = normalizarTexto(input.value);
+    if (!texto) {
+      cerrar();
+      return;
+    }
+    // Primero los que EMPIEZAN con lo escrito, después los que lo contienen.
+    const empiezan = paisesBuscables.filter((p) => normalizarTexto(p.es).startsWith(texto));
+    const contienen = paisesBuscables.filter(
+      (p) => !empiezan.includes(p) && p.buscar.includes(texto)
+    );
+    resultados = [...empiezan, ...contienen].slice(0, 8);
+    lista.innerHTML = resultados.length
+      ? resultados.map((p, i) => `<li role="option" data-i="${i}">${p.es}</li>`).join("")
+      : `<li class="sin-resultados">No encontramos ese país</li>`;
+    lista.classList.remove("hidden");
+    input.setAttribute("aria-expanded", "true");
+    marcado = resultados.length ? 0 : -1;
+    pintarMarcado();
+  };
+
+  input.addEventListener("input", mostrar);
+  input.addEventListener("focus", mostrar);
+  input.addEventListener("keydown", (evt) => {
+    if (evt.key === "ArrowDown" && resultados.length) {
+      evt.preventDefault();
+      marcado = (marcado + 1) % resultados.length;
+      pintarMarcado();
+    } else if (evt.key === "ArrowUp" && resultados.length) {
+      evt.preventDefault();
+      marcado = (marcado - 1 + resultados.length) % resultados.length;
+      pintarMarcado();
+    } else if (evt.key === "Enter") {
+      evt.preventDefault();
+      if (marcado >= 0 && resultados[marcado]) elegir(resultados[marcado]);
+    } else if (evt.key === "Escape") {
+      cerrar();
+    }
+  });
+  // mousedown (y no click) para que se elija antes de que el input pierda el foco.
+  lista.addEventListener("mousedown", (evt) => {
+    const li = evt.target.closest("li[data-i]");
+    if (li) {
+      evt.preventDefault();
+      elegir(resultados[Number(li.dataset.i)]);
+    }
+  });
+  document.addEventListener("click", (evt) => {
+    if (!barra.contains(evt.target)) cerrar();
+  });
+}
+
+function ensureTooltip() {
+  if (document.getElementById("mapa-tooltip")) return;
+  const tip = document.createElement("div");
+  tip.id = "mapa-tooltip";
+  tip.className = "mapa-tooltip hidden";
+  tip.setAttribute("role", "tooltip");
+  document.body.appendChild(tip);
+
+  const mapa = document.getElementById("world-map");
+  const textoPara = (path) => {
+    const pais = paisesBuscables.find((p) => p.path === path);
+    const nombre = pais ? pais.es : path.dataset.name;
+    const indicador = INDICATORS.find((i) => i.code === window.caracteristicaSeleccionada);
+    if (!indicador) return `<strong>${nombre}</strong>`;
+    const valor = valoresDelMapa.get(path.dataset.id.toUpperCase());
+    return valor === undefined
+      ? `<strong>${nombre}</strong><span>${indicador.label}: sin datos</span>`
+      : `<strong>${nombre}</strong><span>${indicador.label}: ${indicador.format(valor)}</span>`;
+  };
+  const mover = (evt) => {
+    const margen = 14;
+    const ancho = tip.offsetWidth;
+    let x = evt.clientX + margen;
+    if (x + ancho > window.innerWidth - 8) x = evt.clientX - ancho - margen;
+    tip.style.left = `${Math.max(8, x)}px`;
+    tip.style.top = `${evt.clientY + margen}px`;
+  };
+
+  mapa.addEventListener("mousemove", (evt) => {
+    const path = evt.target.closest?.(".country");
+    if (!path) {
+      tip.classList.add("hidden");
+      return;
+    }
+    tip.innerHTML = textoPara(path);
+    tip.classList.remove("hidden");
+    mover(evt);
+  });
+  mapa.addEventListener("mouseleave", () => tip.classList.add("hidden"));
+}
+
 function wireMapEvents() {
   document.querySelectorAll(".country").forEach((path) => {
     path.addEventListener("click", onCountryClick);
   });
   ensureAdvancedPanel();
   ensureSelector();
+  armarIndicePaises();
+  ensureBuscador(); // va después del selector para quedar arriba de todo
+  ensureTooltip();
 }
 
 document.addEventListener("DOMContentLoaded", wireMapEvents);

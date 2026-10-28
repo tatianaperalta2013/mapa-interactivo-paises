@@ -547,7 +547,7 @@ footer a {
   height: 12px;
   border: 1px solid var(--panel-border);
   border-radius: 3px;
-  background: linear-gradient(to right, #FF0000, #00FF00);
+  background: linear-gradient(to right, #46327E, #365C8D, #277F8E, #1FA187, #4AC16D, #9FDA3A, #FDE725);
 }
 
 .stat-selected {
@@ -620,4 +620,232 @@ footer a {
 
 .adv-change {
   font-size: 14px;
+}
+
+/* Buscador de países */
+
+.buscador-barra {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 2px 4px 12px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.buscador-caja {
+  position: relative;
+  flex: 0 1 340px;
+  min-width: 220px;
+}
+
+.buscador-input {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--panel-border);
+  color: var(--text);
+  font-family: var(--body);
+  font-size: 13px;
+  padding: 7px 10px;
+  border-radius: 4px;
+}
+
+.buscador-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.buscador-lista {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  margin: 0;
+  padding: 4px 0;
+  list-style: none;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
+}
+
+.buscador-lista li {
+  padding: 7px 12px;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.buscador-lista li.marcado,
+.buscador-lista li[data-i]:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.buscador-lista .sin-resultados {
+  color: var(--text-muted);
+  cursor: default;
+}
+
+.buscador-lista.hidden {
+  display: none;
+}
+
+/* Cartelito al pasar el mouse por un país */
+
+.mapa-tooltip {
+  position: fixed;
+  z-index: 50;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 280px;
+  padding: 7px 10px;
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.5);
+  font-size: 12.5px;
+  color: var(--text);
+}
+
+.mapa-tooltip strong {
+  color: var(--accent);
+  font-size: 13px;
+}
+
+.mapa-tooltip.hidden {
+  display: none;
+}
+
+/* Indicador de carga */
+
+.cargando {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 12px 14px;
+  font-size: 13.5px;
+  color: var(--text-muted);
+  background: var(--accent-soft);
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+}
+
+.spinner {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border: 3px solid var(--panel-border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: girar 0.8s linear infinite;
+}
+
+@keyframes girar {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation-duration: 2.4s;
+  }
+}
+
+/* Cuadro con el país solo, arriba del mapa mundi */
+
+.map-panel {
+  position: relative;
+}
+
+.pais-ampliado {
+  position: absolute;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(12, 23, 32, 0.6);
+  backdrop-filter: blur(2px);
+  animation: aparecer 0.25s ease;
+}
+
+.pais-ampliado-caja {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: min(62%, 560px);
+  height: 82%;
+  padding: 16px 20px 18px;
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.6);
+}
+
+.pais-ampliado-titulo {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 20px;
+  color: var(--text);
+}
+
+.pais-ampliado-detalle {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--accent);
+  text-align: center;
+}
+
+.pais-ampliado-svg {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  margin-top: 10px;
+}
+
+.pais-ampliado-svg path {
+  stroke: var(--text);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.pais-ampliado-cerrar {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--panel-border);
+  border-radius: 50%;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.pais-ampliado-cerrar:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+@keyframes aparecer {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (max-width: 700px) {
+  .pais-ampliado-caja {
+    width: 88%;
+  }
 }

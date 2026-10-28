@@ -86,7 +86,7 @@ async function handleWdiRequest(res, requestUrl) {
     countryName.length > 100 ||
     !Number.isInteger(years) ||
     years < 1 ||
-    years > 10 ||
+    years > 30 ||
     [...requestUrl.searchParams.keys()].some((key) => !["country", "years"].includes(key))
   ) {
     sendJson(res, 400, { error: "Parámetros de consulta histórica no válidos." });
@@ -172,22 +172,32 @@ async function handleWorldBankRequest(req, res, requestUrl) {
     sendJson(res, 404, { error: "Ruta de consulta al Banco Mundial no válida." });
     return;
   }
+    const params = requestUrl.searchParams;
+    const hasMrv = params.has("mrv");
+    const hasMrnev = params.has("mrnev");
+    const hasDate = params.has("date");
 
-  const params = requestUrl.searchParams;
-  const hasMrv = params.has("mrv");
-  const hasDate = params.has("date");
-  const mrv = params.get("mrv");
-  const date = params.get("date");
-  const perPage = params.get("per_page");
+    const mrv = params.get("mrv");
+    const mrnev = params.get("mrnev");
+    const date = params.get("date");
+    const perPage = params.get("per_page");
   if (
     params.get("format") !== "json" ||
-    hasMrv === hasDate ||
+    Number(hasMrv) + Number(hasMrnev) + Number(hasDate) !== 1 ||
     (hasMrv && !/^[1-9]\d?$/.test(mrv)) ||
+    (hasMrnev && !/^[1-9]\d?$/.test(mrnev)) ||
     (hasDate && !/^\d{4}:\d{4}$/.test(date)) ||
-    (perPage !== null && (!/^\d{1,3}$/.test(perPage) || Number(perPage) < 1 || Number(perPage) > 400)) ||
-    [...params.keys()].some((key) => !["format", "mrv", "date", "per_page"].includes(key))
+    (perPage !== null &&
+      (!/^\d{1,4}$/.test(perPage) ||
+        Number(perPage) < 1 ||
+        Number(perPage) > 1000)) ||
+    [...params.keys()].some(
+      (key) => !["format", "mrv", "mrnev", "date", "per_page"].includes(key)
+    )
   ) {
-    sendJson(res, 400, { error: "Parámetros de consulta al Banco Mundial no válidos." });
+    sendJson(res, 400, {
+      error: "Parámetros de consulta al Banco Mundial no válidos.",
+    });
     return;
   }
 

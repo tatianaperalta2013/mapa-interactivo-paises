@@ -79,7 +79,7 @@ function ensureAdvancedPanel() {
   if (!panel) {
     panel = document.createElement("div");
     panel.id = "advanced-panel";
-    panel.className = "advanced-panel";
+    panel.className = "advanced-panel data-panel";
     panel.innerHTML = `
       <div class="locked-msg">
         🔒 Esta app tiene datos avanzados (PBI, desempleo, esperanza de

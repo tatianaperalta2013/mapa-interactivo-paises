@@ -193,6 +193,7 @@ main {
   display: block;
   margin-top: 16px;
   overflow: visible;
+  background-color: #fff;
 }
 
 .chart-grid {
@@ -201,7 +202,7 @@ main {
 }
 
 .chart-axis-label {
-  fill: var(--text-muted);
+  fill: #52616a;
   font-family: var(--body);
   font-size: 12px;
 }
@@ -578,6 +579,7 @@ footer a {
   height: auto;
   display: block;
   overflow: visible;
+  background-color: #fff;
 }
 
 .adv-chart-wrap {

@@ -181,6 +181,7 @@ async function handleWorldBankRequest(req, res, requestUrl) {
     const mrnev = params.get("mrnev");
     const date = params.get("date");
     const perPage = params.get("per_page");
+    const page = params.get("page");
   if (
     params.get("format") !== "json" ||
     Number(hasMrv) + Number(hasMrnev) + Number(hasDate) !== 1 ||
@@ -191,8 +192,9 @@ async function handleWorldBankRequest(req, res, requestUrl) {
       (!/^\d{1,4}$/.test(perPage) ||
         Number(perPage) < 1 ||
         Number(perPage) > 1000)) ||
+    (page !== null && (!/^[1-9]\d?$/.test(page) || Number(page) > 20)) ||
     [...params.keys()].some(
-      (key) => !["format", "mrv", "mrnev", "date", "per_page"].includes(key)
+      (key) => !["format", "mrv", "mrnev", "date", "per_page", "page"].includes(key)
     )
   ) {
     sendJson(res, 400, {

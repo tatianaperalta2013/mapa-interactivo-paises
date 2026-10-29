@@ -63,12 +63,21 @@ const ADVANCED_INDICATORS = [
   },
 ];
 
+const RISK_PROXY_INDICATORS = [
+  { code: "GC.DOD.TOTL.GD.ZS", invert: false },
+  { code: "FP.CPI.TOTL.ZG", invert: false },
+  { code: "NY.GDP.MKTP.KD.ZG", invert: true },
+  { code: "FI.RES.TOTL.MO", invert: true },
+];
+const RISK_PROXY_LABEL = "Proxy de vulnerabilidad soberana (0–100)";
+
 let activePath = null;
 let datosRespaldo = null; // countries.json (HU04), se usa solo si falla la API real
 let selectedIndicatorCode = null;
 let countryRequestId = 0;
 let choroplethRequestId = 0;
 let valoresDelMapa = new Map(); // código de país -> valor de la característica elegida
+let riskProxyPromise = null;
 
 // MIDP-21/22: el panel de datos avanzados va del lado izquierdo, debajo
 // del mapa. En vez de agregarlo a mano en index.html, lo creamos acá con
@@ -190,6 +199,128 @@ async function fetchIndicator(isoCode, indicatorCode) {
   const serie = await fetchIndicatorSerie(isoCode, indicatorCode, 1);
   if (serie.length === 0) return null;
   return serie[0];
+}
+
+async function fetchRiskProxyWorldSeries() {
+  const firstYear = new Date().getFullYear() - 19;
+  const lastYear = new Date().getFullYear();
+  const recordsByYear = new Map();
+  const countryCodes = new Set(
+    [...document.querySelectorAll("#world-map .country")].map((country) =>
+      country.dataset.id.toUpperCase()
+    )
+  );
+
+  for (const indicator of RISK_PROXY_INDICATORS) {
+    let page = 1;
+    let totalPages = 1;
+
+    while (page <= totalPages) {
+      const url =
+        `${WORLD_BANK_BASE}/all/indicator/${indicator.code}` +
+        `?format=json&date=${firstYear}:${lastYear}&per_page=1000&page=${page}`;
+      const response = await fetch(url, { cache: "no-store" });
+      if (!response.ok) {
+        let detail = "";
+        try {
+          detail = (await response.json()).error || "";
+        } catch {
+          detail = await response.text();
+        }
+        throw new Error(detail || `HTTP ${response.status}`);
+      }
+
+      const payload = await response.json();
+      const metadata = payload[0];
+      const records = payload[1];
+      if (!metadata || !Array.isArray(records)) {
+        throw new Error(`Respuesta inválida para el indicador ${indicator.code}.`);
+      }
+      totalPages = Number(metadata.pages);
+      if (!Number.isInteger(totalPages) || totalPages < 1 || totalPages > 20) {
+        throw new Error(`Paginación inválida para el indicador ${indicator.code}.`);
+      }
+
+      for (const record of records) {
+        const country = record.country?.id?.toUpperCase();
+        const year = Number(record.date);
+        if (record.value === null || record.value === undefined || record.value === "") continue;
+        const value = Number(record.value);
+        if (
+          !country ||
+          !countryCodes.has(country) ||
+          !Number.isInteger(year) ||
+          !Number.isFinite(value)
+        ) {
+          continue;
+        }
+
+        if (!recordsByYear.has(year)) recordsByYear.set(year, new Map());
+        const countries = recordsByYear.get(year);
+        if (!countries.has(country)) countries.set(country, {});
+        countries.get(country)[indicator.code] = value;
+      }
+      page++;
+    }
+  }
+
+  const scoresByYear = new Map();
+  for (const [year, countries] of recordsByYear) {
+    const completeCountries = [...countries.entries()].filter(([, values]) =>
+      RISK_PROXY_INDICATORS.every((indicator) =>
+        Number.isFinite(values[indicator.code])
+      )
+    );
+    if (completeCountries.length < 2) continue;
+
+    const scoresByCountry = new Map(
+      completeCountries.map(([country]) => [country, 0])
+    );
+    for (const indicator of RISK_PROXY_INDICATORS) {
+      const ranked = completeCountries
+        .map(([country, values]) => ({ country, value: values[indicator.code] }))
+        .sort((a, b) => a.value - b.value);
+      let start = 0;
+
+      while (start < ranked.length) {
+        let end = start + 1;
+        while (end < ranked.length && ranked[end].value === ranked[start].value) end++;
+        const percentile =
+          ranked.length === 1
+            ? 50
+            : ((start + end - 1) / 2 / (ranked.length - 1)) * 100;
+        const vulnerabilityPercentile = indicator.invert ? 100 - percentile : percentile;
+        for (let index = start; index < end; index++) {
+          scoresByCountry.set(
+            ranked[index].country,
+            scoresByCountry.get(ranked[index].country) + vulnerabilityPercentile / RISK_PROXY_INDICATORS.length
+          );
+        }
+        start = end;
+      }
+    }
+    scoresByYear.set(year, scoresByCountry);
+  }
+
+  return scoresByYear;
+}
+
+async function fetchRiskProxySeries(isoCode) {
+  if (!riskProxyPromise) {
+    riskProxyPromise = fetchRiskProxyWorldSeries().catch((error) => {
+      riskProxyPromise = null;
+      throw error;
+    });
+  }
+
+  const scoresByYear = await riskProxyPromise;
+  return [...scoresByYear.entries()]
+    .sort(([yearA], [yearB]) => yearA - yearB)
+    .flatMap(([year, scores]) => {
+      const value = scores.get(isoCode.toUpperCase());
+      return value === undefined ? [] : [{ anio: String(year), valor: value }];
+    })
+    .slice(-10);
 }
 
 // Antes pedíamos los 3 indicadores en paralelo con Promise.all, pero eso
@@ -645,11 +776,26 @@ function graficoAvanzadoHtml(indicator, serie, indice) {
     </svg>`;
 }
 
+function graficoProxyRiesgoHtml(serie) {
+  const indicator = {
+    label: RISK_PROXY_LABEL,
+    format: (value) => `${value.toFixed(1)} puntos`,
+  };
+  if (!serie || serie.length < 2) {
+    return `<p class="chart-note">${
+      serie && serie.length === 1
+        ? "Solo hay un año con datos suficientes para calcular este proxy."
+        : "No hay años con datos completos para calcular este proxy."
+    }</p>`;
+  }
+  return graficoAvanzadoHtml(indicator, serie, ADVANCED_INDICATORS.length);
+}
+
 // MIDP-19: el usuario con sesión iniciada puede bajar el historial en datos
 // crudos (sin formato, tal cual vienen de la API) como un archivo CSV.
 // Usamos ";" como separador y coma decimal porque así lo espera Excel en
 // español, y le agregamos BOM al principio para que respete las tildes.
-function descargarHistorialCSV(name, code, historicos, avanzados, seriesAvanzadas) {
+function descargarHistorialCSV(name, code, historicos, avanzados, seriesAvanzadas, seriesProxyRiesgo) {
   const num = (v) => String(v).replace(".", ",");
   const filas = [["Pais", "Codigo", "Indicador", "Anio", "Valor"]];
 
@@ -667,6 +813,10 @@ function descargarHistorialCSV(name, code, historicos, avanzados, seriesAvanzada
     } else if (avanzados[i]) {
       filas.push([name, code, ind.label, avanzados[i].anio, num(avanzados[i].valor)]);
     }
+  });
+
+  (seriesProxyRiesgo || []).forEach((dato) => {
+    filas.push([name, code, RISK_PROXY_LABEL, dato.anio, num(dato.valor)]);
   });
 
   const csv = filas
@@ -711,7 +861,7 @@ function enviarSugerencia(texto) {
 // resultados: los 3 datos básicos (array paralelo a INDICATORS)
 // historicos: null si no hay sesión iniciada, o array paralelo a INDICATORS
 // avanzados: null si no hay sesión iniciada, o array paralelo a ADVANCED_INDICATORS
-function renderCountry(name, code, resultados, historicos, avanzados, seriesAvanzadas) {
+function renderCountry(name, code, resultados, historicos, avanzados, seriesAvanzadas, serieProxyRiesgo, errorProxyRiesgo) {
   const panel = document.getElementById("data-panel");
 
   const stats = INDICATORS.map((ind, i) => {
@@ -810,7 +960,29 @@ function renderCountry(name, code, resultados, historicos, avanzados, seriesAvan
           <div class="adv-chart-wrap">${serie ? graficoAvanzadoHtml(ind, serie, i) : ""}</div>
         </div>`;
     }).join("");
-
+    const proxyRiesgoHtml = `
+      <div class="stat adv-stat risk-proxy-stat">
+        <div class="adv-info">
+          <div class="stat-label">${RISK_PROXY_LABEL}</div>
+          <div class="stat-value">${
+            serieProxyRiesgo?.length
+              ? `${serieProxyRiesgo[serieProxyRiesgo.length - 1].valor.toFixed(1)} puntos <span class="stat-year">(${serieProxyRiesgo[serieProxyRiesgo.length - 1].anio})</span>`
+              : "Sin datos suficientes"
+          }</div>
+        </div>
+        <div class="adv-chart-wrap">${
+          errorProxyRiesgo
+            ? `<p class="chart-note">No se pudo calcular el proxy. Intentá nuevamente más tarde.</p>`
+            : graficoProxyRiesgoHtml(serieProxyRiesgo)
+        }</div>
+        <p class="risk-proxy-note">
+          Estimación propia: promedia los percentiles de deuda del gobierno central,
+          inflación, crecimiento del PBI y reservas (con igual peso), comparando
+          países del mismo año. Un valor mayor indica mayor vulnerabilidad relativa;
+          no es EMBI ni una calificación oficial. Fuente: Banco Mundial (WDI).
+          Requiere los cuatro datos.
+        </p>
+      </div>`;
     // MIDP-19 y MIDP-24: hay dos tipos de usuario con sesión iniciada.
     // El "registrado" ve los datos avanzados; el "premium" (su email está
     // en PREMIUM_EMAILS, en auth.js) además puede bajar el historial en
@@ -832,11 +1004,12 @@ function renderCountry(name, code, resultados, historicos, avanzados, seriesAvan
     avanzadoPanel.innerHTML = `
       <p class="section-label adv-title">Datos avanzados de ${name} (usuario ${esPremium ? "premium" : "registrado"})</p>
       <div class="stat-list">${avanzadosHtml}</div>
+      <div class="stat-list">${proxyRiesgoHtml}</div>
       ${premiumHtml}`;
 
     if (esPremium) {
       document.getElementById("download-btn").addEventListener("click", () => {
-        descargarHistorialCSV(name, code, historicos, avanzados, seriesAvanzadas);
+        descargarHistorialCSV(name, code, historicos, avanzados, seriesAvanzadas, serieProxyRiesgo);
       });
 
       document.getElementById("suggest-btn").addEventListener("click", () => {
@@ -939,9 +1112,11 @@ async function onCountryClick(evt) {
     let historicos = null;
     let avanzados = null;
     let seriesAvanzadas = null;
+    let serieProxyRiesgo = null;
+    let errorProxyRiesgo = null;
 
     if (window.usuarioLogueado) {
-      const totalPasos = INDICATORS.length + ADVANCED_INDICATORS.length;
+      const totalPasos = INDICATORS.length + ADVANCED_INDICATORS.length + 1;
       let pasosHechos = 0;
       actualizarProgreso(pasosHechos, totalPasos);
       historicos = [];
@@ -971,9 +1146,18 @@ async function onCountryClick(evt) {
         if (requestId !== countryRequestId) return;
         actualizarProgreso(++pasosHechos, totalPasos);
       }
+
+      try {
+        serieProxyRiesgo = await fetchRiskProxySeries(code);
+      } catch (err) {
+        console.error("No se pudo calcular el proxy de vulnerabilidad soberana:", err);
+        errorProxyRiesgo = true;
+      }
+      if (requestId !== countryRequestId) return;
+      actualizarProgreso(++pasosHechos, totalPasos);
     }
 
-    renderCountry(name, code, resultados, historicos, avanzados, seriesAvanzadas);
+    renderCountry(name, code, resultados, historicos, avanzados, seriesAvanzadas, serieProxyRiesgo, errorProxyRiesgo);
   } catch (err) {
     if (requestId !== countryRequestId) return;
 

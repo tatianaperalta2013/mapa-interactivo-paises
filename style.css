@@ -568,6 +568,18 @@ footer a {
   align-items: center;
 }
 
+.risk-proxy-note {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  background: var(--accent-soft);
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .adv-change {
   margin-top: 6px;
   font-size: 12.5px;

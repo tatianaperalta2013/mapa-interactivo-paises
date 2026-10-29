@@ -68,6 +68,7 @@ let datosRespaldo = null; // countries.json (HU04), se usa solo si falla la API 
 let selectedIndicatorCode = null;
 let countryRequestId = 0;
 let choroplethRequestId = 0;
+let valoresDelMapa = new Map(); // código de país -> valor de la característica elegida
 
 // MIDP-21/22: el panel de datos avanzados va del lado izquierdo, debajo
 // del mapa. En vez de agregarlo a mano en index.html, lo creamos acá con
@@ -119,10 +120,9 @@ function esperar(ms) {
 // un poco más cada vez (backoff, pronunciado "bák-of", significa "espera
 // creciente entre reintentos").
 //
-// Versión general: pide una SERIE de valores (mrv = cuántos años pedís,
-// del más nuevo al más viejo, "most recent values" — pronunciado "moust
-// ricent vállius", significa "valores más recientes"). La usamos con
-// mrv=1 para "el dato actual" y con mrv=10 para el histórico (MIDP-21/22).
+// Versión general: pide una SERIE de valores.
+// Para el dato individual actual usamos mrnev=1 (último dato no vacío).
+// Para series históricas mantenemos mrv=N para traer múltiples años.
 async function fetchIndicatorSerie(
   isoCode,
   indicatorCode,
@@ -139,7 +139,8 @@ async function fetchIndicatorSerie(
     try {
       const url = aniosMaximos
         ? `/api/wdi/country/${isoCode}/indicator/${indicatorCode}?country=${encodeURIComponent(countryName)}&years=${aniosMaximos}`
-        : `${WORLD_BANK_BASE}/${isoCode}/indicator/${indicatorCode}?format=json&mrv=${mrv}`;
+        : `${WORLD_BANK_BASE}/${isoCode}/indicator/${indicatorCode}?format=json&${mrv === 1 ? "mrnev=1" : `mrv=${mrv}`}`;
+
       const res = await fetch(url, { cache: "no-store" });
       if (!res.ok) {
         let detail = "";
@@ -160,6 +161,7 @@ async function fetchIndicatorSerie(
       const returnedIndicators = datos
         .map((dato) => dato.indicator?.id)
         .filter(Boolean);
+
       if (returnedIndicators.some((id) => id.toUpperCase() !== indicatorCode.toUpperCase())) {
         throw new Error("La fuente devolvió datos de otra variable.");
       }
@@ -167,10 +169,12 @@ async function fetchIndicatorSerie(
       const firstYear = aniosMaximos
         ? new Date().getFullYear() - aniosMaximos + 1
         : Number.NEGATIVE_INFINITY;
+
       const serie = datos
         .filter((dato) => dato.value !== null && Number(dato.date) >= firstYear)
         .map((d) => ({ valor: d.value, anio: d.date }))
         .sort((a, b) => Number(a.anio) - Number(b.anio));
+
       serie.source = json[0]?.source || "Banco Mundial";
       return serie;
     } catch (err) {
@@ -206,16 +210,31 @@ function renderLoading(name, code) {
   panel.innerHTML = `
     <p class="country-code">${code}</p>
     <h2 class="country-name">${name}</h2>
-    <div class="no-data-msg">Cargando datos desde el Banco Mundial...</div>
+    <div class="cargando" role="status">
+      <span class="spinner" aria-hidden="true"></span>
+      <span id="progreso-carga">Cargando datos desde el Banco Mundial...</span>
+    </div>
   `;
+
   renderHistoryMessage(
     selectedIndicatorCode
       ? `${name} — ${INDICATORS.find((item) => item.code === selectedIndicatorCode).label}`
       : "Historial de la variable",
     selectedIndicatorCode ? "Cargando historial..." : "Seleccioná un indicador para ver su historial."
   );
+
   const avanzadoPanel = ensureAdvancedPanel();
-  avanzadoPanel.innerHTML = `<div class="no-data-msg">Cargando...</div>`;
+  avanzadoPanel.innerHTML = `
+    <div class="cargando" role="status">
+      <span class="spinner" aria-hidden="true"></span>
+      <span>Cargando datos avanzados, puede tardar unos segundos...</span>
+    </div>`;
+}
+
+// Actualiza el texto de la ruedita de carga ("Cargando dato 3 de 9...").
+function actualizarProgreso(hecho, total) {
+  const el = document.getElementById("progreso-carga");
+  if (el) el.textContent = `Cargando datos históricos: ${hecho} de ${total}...`;
 }
 
 function renderHistoryMessage(title, message, isError = false) {
@@ -243,17 +262,23 @@ function dibujarGraficoSerie(name, indicator, serie) {
   const domainMinimum = Math.max(0, minimum - padding);
   const domainMaximum = maximum + padding || 1;
   const valueRange = domainMaximum - domainMinimum || 1;
+
   const x = (index) =>
     margin.left + (serie.length === 1 ? plotWidth / 2 : (index / (serie.length - 1)) * plotWidth);
+
   const y = (value) => margin.top + ((domainMaximum - value) / valueRange) * plotHeight;
+
   const compactFormat = new Intl.NumberFormat("es-AR", {
     notation: "compact",
     maximumFractionDigits: 1,
   });
+
   const linePath = serie
     .map((point, index) => `${index === 0 ? "M" : "L"} ${x(index)} ${y(point.valor)}`)
     .join(" ");
+
   const areaPath = `${linePath} L ${x(serie.length - 1)} ${margin.top + plotHeight} L ${x(0)} ${margin.top + plotHeight} Z`;
+
   const grid = Array.from({ length: 4 }, (_, index) => {
     const tickValue = domainMinimum + ((3 - index) / 3) * valueRange;
     const tickY = y(tickValue);
@@ -261,10 +286,12 @@ function dibujarGraficoSerie(name, indicator, serie) {
       <line class="chart-grid" x1="${margin.left}" y1="${tickY}" x2="${width - margin.right}" y2="${tickY}"></line>
       <text class="chart-axis-label" x="${margin.left - 10}" y="${tickY + 4}" text-anchor="end">${compactFormat.format(tickValue)}</text>`;
   }).join("");
+
   const points = serie.map((point, index) => `
     <circle class="chart-point" cx="${x(index)}" cy="${y(point.valor)}" r="4">
       <title>${point.anio}: ${indicator.format(point.valor)}</title>
     </circle>`).join("");
+
   const years = serie.map((point, index) => `
     <text class="chart-axis-label" x="${x(index)}" y="${height - 16}" text-anchor="middle">${point.anio}</text>`).join("");
 
@@ -290,6 +317,7 @@ function dibujarGraficoSerie(name, indicator, serie) {
 
 function seleccionarIndicador(indicatorCode, name, historicos) {
   selectedIndicatorCode = indicatorCode;
+
   document.querySelectorAll(".stat-trigger").forEach((button) => {
     const isSelected = button.dataset.indicator === indicatorCode;
     button.closest(".stat").classList.toggle("selected-stat", isSelected);
@@ -298,6 +326,7 @@ function seleccionarIndicador(indicatorCode, name, historicos) {
 
   const indicator = INDICATORS.find((item) => item.code === indicatorCode);
   if (!indicator) return;
+
   if (!window.usuarioLogueado) {
     renderHistoryMessage(
       `${name} — ${indicator.label}`,
@@ -316,33 +345,64 @@ function aplicarResaltado() {
   });
 }
 
+// Escala de color apta para daltónicos (tipo "viridis"): va de violeta
+// (valor menor) a amarillo (valor mayor) pasando por azul y verde. Se
+// distingue bien con todos los tipos de daltonismo, a diferencia del
+// rojo-verde que usábamos antes. Ver también .choropleth-gradient en style.css.
+const PALETA_DALTONICOS = ["#46327E", "#365C8D", "#277F8E", "#1FA187", "#4AC16D", "#9FDA3A", "#FDE725"];
+
+function colorEnPaleta(proporcion) {
+  const tramos = PALETA_DALTONICOS.length - 1;
+  const posicion = Math.max(0, Math.min(1, proporcion)) * tramos;
+  const i = Math.min(Math.floor(posicion), tramos - 1);
+  const t = posicion - i;
+  const canal = (hex, k) => parseInt(hex.slice(1 + 2 * k, 3 + 2 * k), 16);
+  const mezcla = (k) =>
+    Math.round(canal(PALETA_DALTONICOS[i], k) * (1 - t) + canal(PALETA_DALTONICOS[i + 1], k) * t);
+  const hexadecimal = (n) => n.toString(16).padStart(2, "0").toUpperCase();
+  return `#${hexadecimal(mezcla(0))}${hexadecimal(mezcla(1))}${hexadecimal(mezcla(2))}`;
+}
+
 function colorParaValor(valor, valoresOrdenados) {
-  // MIDP-11: escala lineal entre el valor mínimo (rojo) y máximo (verde).
+  // MIDP-11/13: escala entre el valor mínimo y el máximo (colores aptos para
+  // daltónicos). MIDP-12: la inflación va invertida.
   // No usamos la posición en el ranking: el color depende del valor real.
   if (valoresOrdenados.length === 0) return "#33505f";
+
   const minimo = valoresOrdenados[0];
   const maximo = valoresOrdenados[valoresOrdenados.length - 1];
+
   // Si todos los países tienen el mismo valor, usamos un color intermedio.
   const proporcion = maximo === minimo
     ? 0.5
     : Math.max(0, Math.min(1, (valor - minimo) / (maximo - minimo)));
-  const rojo = Math.round(255 * (1 - proporcion));
-  const verde = Math.round(255 * proporcion);
-  const hexadecimal = (canal) => canal.toString(16).padStart(2, "0").toUpperCase();
-  return `#${hexadecimal(rojo)}${hexadecimal(verde)}00`;
+
+  // MIDP-12: la inflación usa escala invertida (baja inflación = amarillo,
+  // el extremo "bueno" de la paleta; alta inflación = violeta).
+  // Reservas y población mantienen la escala original.
+  const esInflacion = window.caracteristicaSeleccionada === "FP.CPI.TOTL.ZG";
+  return colorEnPaleta(esInflacion ? 1 - proporcion : proporcion);
 }
 
 function aplicarDatosAlMapa(registros) {
   const valoresPorPais = new Map();
+
   for (const registro of registros) {
     const codigo = registro.country?.id?.toUpperCase();
+
+    // Un valor ausente no debe convertirse en 0 (Number(null) === 0).
+    if (registro.value === null || registro.value === undefined || registro.value === "") continue;
+
     const valor = Number(registro.value);
     if (codigo && Number.isFinite(valor)) valoresPorPais.set(codigo, valor);
   }
 
+  valoresDelMapa = valoresPorPais; // lo usa el cartelito al pasar el mouse
   const valoresOrdenados = [...valoresPorPais.values()].sort((a, b) => a - b);
+
   document.querySelectorAll("#world-map .country").forEach((pais) => {
     const valor = valoresPorPais.get(pais.dataset.id.toUpperCase());
+
     if (valor === undefined) {
       pais.classList.remove("has-indicator-value");
       pais.style.removeProperty("--indicator-fill");
@@ -356,6 +416,7 @@ function aplicarDatosAlMapa(registros) {
 
 async function colorearPaises(indicatorCode, info) {
   const requestId = ++choroplethRequestId;
+
   if (!indicatorCode) {
     aplicarDatosAlMapa([]);
     info.textContent = "";
@@ -364,10 +425,12 @@ async function colorearPaises(indicatorCode, info) {
 
   const indicator = INDICATORS.find((item) => item.code === indicatorCode);
   aplicarDatosAlMapa([]);
-  info.textContent = "Cargando valores por país...";
+  info.textContent = "⏳ Cargando valores por país...";
+
   try {
-    const url = `${WORLD_BANK_BASE}/all/indicator/${indicatorCode}?format=json&mrv=1&per_page=400`;
+    const url = `${WORLD_BANK_BASE}/all/indicator/${indicatorCode}?format=json&mrnev=1&per_page=1000`;
     const response = await fetch(url, { cache: "no-store" });
+
     if (!response.ok) {
       let detail = "";
       try {
@@ -380,6 +443,7 @@ async function colorearPaises(indicatorCode, info) {
 
     const payload = await response.json();
     if (requestId !== choroplethRequestId) return;
+
     if (!Array.isArray(payload) || !Array.isArray(payload[1])) {
       throw new Error("La API devolvió una respuesta de países no válida.");
     }
@@ -387,7 +451,9 @@ async function colorearPaises(indicatorCode, info) {
     const records = payload[1].filter(
       (record) => record.indicator?.id?.toUpperCase() === indicatorCode.toUpperCase()
     );
+
     aplicarDatosAlMapa(records);
+
     const cantidad = document.querySelectorAll("#world-map .country.has-indicator-value").length;
     info.textContent = cantidad
       ? `Color por ${indicator.label.toLowerCase()} en ${cantidad} países.`
@@ -412,14 +478,30 @@ function ensureSelector() {
       ${INDICATORS.map((ind) => `<option value="${ind.code}">${ind.label}</option>`).join("")}
     </select>
     <span id="caracteristica-info" class="selector-info" aria-live="polite"></span>
-    <span class="choropleth-legend" aria-label="Escala de color: menor a mayor valor">
-      <span>Menor valor</span><span class="choropleth-gradient" aria-hidden="true"></span><span>Mayor valor</span>
+    <span class="choropleth-legend" id="choropleth-legend" aria-label="Escala de colores">
+      <span id="legend-min">Menor valor</span>
+      <span class="choropleth-gradient" id="legend-gradient" aria-hidden="true"></span>
+      <span id="legend-max">Mayor valor</span>
     </span>`;
+
   document.querySelector(".map-panel").insertAdjacentElement("afterbegin", barra);
 
   const select = document.getElementById("caracteristica-select");
   const info = document.getElementById("caracteristica-info");
+
   select.addEventListener("change", () => {
+        const esInflacion = select.value === "FP.CPI.TOTL.ZG";
+
+    document.getElementById("legend-min").textContent =
+      esInflacion ? "Menor inflación" : "Menor valor";
+
+    document.getElementById("legend-max").textContent =
+      esInflacion ? "Mayor inflación" : "Mayor valor";
+
+    document.getElementById("legend-gradient").style.background =
+      esInflacion
+        ? "linear-gradient(to right, #FDE725, #9FDA3A, #4AC16D, #1FA187, #277F8E, #365C8D, #46327E)"
+        : "linear-gradient(to right, #46327E, #365C8D, #277F8E, #1FA187, #4AC16D, #9FDA3A, #FDE725)";
     window.caracteristicaSeleccionada = select.value || null;
     colorearPaises(window.caracteristicaSeleccionada, info);
     aplicarResaltado();
@@ -427,6 +509,7 @@ function ensureSelector() {
       new CustomEvent("caracteristicachange", { detail: { code: window.caracteristicaSeleccionada } })
     );
   });
+
   mostrarOcultarSelector();
 }
 
@@ -436,8 +519,10 @@ function ensureSelector() {
 function mostrarOcultarSelector() {
   const barra = document.querySelector(".selector-barra");
   if (!barra) return;
+
   const logueado = !!window.usuarioLogueado;
   barra.style.display = logueado ? "" : "none";
+
   if (!logueado) {
     const select = document.getElementById("caracteristica-select");
     if (select && select.value) {
@@ -457,6 +542,7 @@ function mostrarOcultarSelector() {
 async function fetchUltimos10(isoCode, indicatorCode, countryName) {
   const recortar = (serie) => {
     if (!serie || serie.length === 0) return [];
+
     const ultimoAnio = Number(serie[serie.length - 1].anio);
     const recorte = serie.filter((punto) => Number(punto.anio) > ultimoAnio - 10);
     recorte.source = serie.source;
@@ -464,6 +550,7 @@ async function fetchUltimos10(isoCode, indicatorCode, countryName) {
   };
 
   let mejor = [];
+
   for (const anios of [20, 15, 10]) {
     try {
       mejor = recortar(await fetchIndicatorSerie(isoCode, indicatorCode, 1, 1, anios, countryName));
@@ -472,6 +559,7 @@ async function fetchUltimos10(isoCode, indicatorCode, countryName) {
       console.warn(`Serie de ${indicatorCode} con ${anios} años no disponible:`, err.message);
     }
   }
+
   if (mejor.length >= 10) return mejor;
 
   try {
@@ -480,12 +568,11 @@ async function fetchUltimos10(isoCode, indicatorCode, countryName) {
   } catch (err) {
     console.warn(`No se pudo completar la serie de ${indicatorCode}:`, err);
   }
+
   return mejor;
 }
 
-// Dibuja el gráfico (SVG, "scalable vector graphics", pronunciado "escéilabol
-// véctor gráfics", significa "gráficos vectoriales": dibujos hechos con
-// líneas que se ven nítidos a cualquier tamaño) de UN dato avanzado.
+// Dibuja el gráfico SVG de UN dato avanzado.
 // Tiene: área y línea de los últimos 10 años, eje con valores, años abajo,
 // el último punto resaltado con su valor y un cartelito al pasar el mouse.
 function graficoAvanzadoHtml(indicator, serie, indice) {
@@ -525,6 +612,7 @@ function graficoAvanzadoHtml(indicator, serie, indice) {
   }).join("");
 
   const ultimo = serie.length - 1;
+
   const puntos = serie.map((p, i) => `
     <circle class="chart-point" cx="${x(i)}" cy="${y(p.valor)}" r="${i === ultimo ? 6 : 4}">
       <title>${p.anio}: ${indicator.format(p.valor)}</title>
@@ -538,6 +626,7 @@ function graficoAvanzadoHtml(indicator, serie, indice) {
       style="fill: var(--accent); font-weight: 600;">${compacto.format(serie[ultimo].valor)}</text>`;
 
   const idDegradado = `adv-grad-${indice}`;
+
   return `
     <svg class="adv-chart" viewBox="0 0 ${width} ${height}" role="img"
       aria-label="${indicator.label}: evolución de los últimos 10 años, de ${serie[0].anio} a ${serie[ultimo].anio}">
@@ -557,11 +646,9 @@ function graficoAvanzadoHtml(indicator, serie, indice) {
 }
 
 // MIDP-19: el usuario con sesión iniciada puede bajar el historial en datos
-// crudos (sin formato, tal cual vienen de la API) como un archivo CSV
-// ("CSV", pronunciado "sí-es-ví", significa "valores separados por comas":
-// un archivo de texto que se abre directo en Excel).
+// crudos (sin formato, tal cual vienen de la API) como un archivo CSV.
 // Usamos ";" como separador y coma decimal porque así lo espera Excel en
-// español, y le agregamos "﻿" al principio para que respete las tildes.
+// español, y le agregamos BOM al principio para que respete las tildes.
 function descargarHistorialCSV(name, code, historicos, avanzados, seriesAvanzadas) {
   const num = (v) => String(v).replace(".", ",");
   const filas = [["Pais", "Codigo", "Indicador", "Anio", "Valor"]];
@@ -571,8 +658,10 @@ function descargarHistorialCSV(name, code, historicos, avanzados, seriesAvanzada
       filas.push([name, code, ind.label, h.anio, num(h.valor)]);
     });
   });
+
   ADVANCED_INDICATORS.forEach((ind, i) => {
     const serie = seriesAvanzadas ? seriesAvanzadas[i] : null;
+
     if (serie && serie.length > 0) {
       serie.forEach((h) => filas.push([name, code, ind.label, h.anio, num(h.valor)]));
     } else if (avanzados[i]) {
@@ -584,9 +673,10 @@ function descargarHistorialCSV(name, code, historicos, avanzados, seriesAvanzada
     .map((fila) => fila.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(";"))
     .join("\r\n");
 
-  const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
+  const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
   const enlace = document.createElement("a");
+
   enlace.href = url;
   enlace.download = `historial_${code}.csv`;
   document.body.appendChild(enlace);
@@ -597,40 +687,41 @@ function descargarHistorialCSV(name, code, historicos, avanzados, seriesAvanzada
 
 // MIDP-24: el usuario premium le manda directamente a los creadores la
 // sugerencia de un dato nuevo. Abre el programa de mail del usuario con
-// el mensaje ya escrito ("mailto:", pronunciado "méilto", significa
-// "mail para": un enlace que arma un mail listo para enviar).
+// el mensaje ya escrito.
 function enviarSugerencia(texto) {
   const mensaje = texto.trim();
+
   if (!mensaje) {
     alert("Escribí primero qué dato nuevo querés sugerir.");
     return;
   }
+
   const asunto = "Sugerencia de dato nuevo - Mapa Interactivo de Países";
-  // El mail con el que el usuario se registró (lo guarda Firebase). Lo
-  // ponemos en el cuerpo para que los creadores sepan quién escribe y
-  // puedan responderle, y en "cc" (copia) para que el usuario también
-  // reciba una copia en su propio mail.
+
+  // El mail con el que el usuario se registró (lo guarda Firebase).
+  // Lo ponemos en el cuerpo y en copia para facilitar una respuesta.
   const emailUsuario = auth.currentUser ? auth.currentUser.email : "";
   const cuerpo = `${mensaje}\n\nUsuario premium: ${emailUsuario}`;
+
   window.location.href =
     `mailto:${ADMIN_EMAIL}?cc=${encodeURIComponent(emailUsuario)}` +
     `&subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`;
 }
 
 // resultados: los 3 datos básicos (array paralelo a INDICATORS)
-// historicos: null si no hay sesión iniciada, o array paralelo a
-//   INDICATORS con la serie de hasta 10 años de cada uno
-// avanzados: null si no hay sesión iniciada, o array paralelo a
-//   ADVANCED_INDICATORS con el dato más reciente de cada uno
+// historicos: null si no hay sesión iniciada, o array paralelo a INDICATORS
+// avanzados: null si no hay sesión iniciada, o array paralelo a ADVANCED_INDICATORS
 function renderCountry(name, code, resultados, historicos, avanzados, seriesAvanzadas) {
   const panel = document.getElementById("data-panel");
 
   const stats = INDICATORS.map((ind, i) => {
     const r = resultados[i];
+
     const valorMostrado =
       r && r.valor !== null ? `${ind.format(r.valor)} <span class="stat-year">(${r.anio})</span>` : "Sin datos disponibles";
 
     const serie = historicos ? historicos[i] : null;
+
     const historialHtml =
       serie && serie.length > 0
         ? `<details class="historial">
@@ -657,12 +748,15 @@ function renderCountry(name, code, resultados, historicos, avanzados, seriesAvan
     <h2 class="country-name">${name}</h2>
     <div class="stat-list">${stats}</div>
   `;
+
   panel.querySelectorAll(".stat-trigger").forEach((button) => {
     button.addEventListener("click", () => {
       seleccionarIndicador(button.dataset.indicator, name, historicos);
     });
   });
+
   aplicarResaltado();
+
   if (selectedIndicatorCode) {
     if (window.usuarioLogueado) {
       const indicator = INDICATORS.find((item) => item.code === selectedIndicatorCode);
@@ -681,23 +775,28 @@ function renderCountry(name, code, resultados, historicos, avanzados, seriesAvan
   // MIDP-21/22: los datos avanzados van en el panel de la izquierda,
   // debajo del mapa (no acá, en el panel de la derecha).
   const avanzadoPanel = ensureAdvancedPanel();
+
   if (avanzados) {
     const avanzadosHtml = ADVANCED_INDICATORS.map((ind, i) => {
       const r = avanzados[i];
       const serie = seriesAvanzadas ? seriesAvanzadas[i] : null;
+
       const valorMostrado =
         r && r.valor !== null ? `${ind.format(r.valor)} <span class="stat-year">(${r.anio})</span>` : "Sin datos disponibles";
 
       // Variación entre el primer y el último año de la serie.
       let cambioHtml = "";
+
       if (serie && serie.length >= 2 && serie[0].valor !== 0) {
         const primero = serie[0];
         const ultimo = serie[serie.length - 1];
         const cambio = ((ultimo.valor - primero.valor) / Math.abs(primero.valor)) * 100;
+
         const cambioTexto = new Intl.NumberFormat("es-AR", {
           maximumFractionDigits: 1,
           signDisplay: "exceptZero",
         }).format(cambio);
+
         cambioHtml = `<div class="adv-change">${cambio >= 0 ? "▲" : "▼"} ${cambioTexto} % entre ${primero.anio} y ${ultimo.anio}</div>`;
       }
 
@@ -711,11 +810,13 @@ function renderCountry(name, code, resultados, historicos, avanzados, seriesAvan
           <div class="adv-chart-wrap">${serie ? graficoAvanzadoHtml(ind, serie, i) : ""}</div>
         </div>`;
     }).join("");
+
     // MIDP-19 y MIDP-24: hay dos tipos de usuario con sesión iniciada.
     // El "registrado" ve los datos avanzados; el "premium" (su email está
     // en PREMIUM_EMAILS, en auth.js) además puede bajar el historial en
     // CSV y mandarles a los creadores la sugerencia de un dato nuevo.
     const esPremium = window.usuarioPremium;
+
     const premiumHtml = esPremium
       ? `<button id="download-btn" class="retry-btn">⬇ Descargar historial (CSV)</button>
          <p class="section-label">Sugerir un dato nuevo a los creadores</p>
@@ -737,6 +838,7 @@ function renderCountry(name, code, resultados, historicos, avanzados, seriesAvan
       document.getElementById("download-btn").addEventListener("click", () => {
         descargarHistorialCSV(name, code, historicos, avanzados, seriesAvanzadas);
       });
+
       document.getElementById("suggest-btn").addEventListener("click", () => {
         enviarSugerencia(document.getElementById("suggest-text").value);
       });
@@ -754,6 +856,7 @@ function renderCountry(name, code, resultados, historicos, avanzados, seriesAvan
 
 function renderCountryRespaldo(name, code, datos) {
   const panel = document.getElementById("data-panel");
+
   panel.innerHTML = `
     <p class="country-code">${code}</p>
     <h2 class="country-name">${datos.name || name}</h2>
@@ -776,16 +879,20 @@ function renderCountryRespaldo(name, code, datos) {
       </div>
     </div>
   `;
+
   const avanzadoPanel = ensureAdvancedPanel();
+
   avanzadoPanel.innerHTML = `
     <div class="no-data-msg">
       No se pudieron pedir los datos avanzados porque la API no respondió.
     </div>`;
+
   renderHistoryMessage("Historial de la variable", "El historial no está disponible mientras se muestran datos de respaldo.");
 }
 
 function renderError(name, code, path) {
   const panel = document.getElementById("data-panel");
+
   panel.innerHTML = `
     <p class="country-code">${code}</p>
     <h2 class="country-name">${name}</h2>
@@ -796,11 +903,15 @@ function renderError(name, code, path) {
     </div>
     <button id="retry-btn" class="retry-btn">Reintentar</button>
   `;
+
   document.getElementById("retry-btn").addEventListener("click", () => {
     onCountryClick({ currentTarget: path });
   });
+
   renderHistoryMessage("Historial de la variable", "No se puede mostrar el historial porque no se pudo conectar con el servidor.");
+
   const avanzadoPanel = ensureAdvancedPanel();
+
   avanzadoPanel.innerHTML = `
     <div class="no-data-msg">
       No se pudieron pedir los datos avanzados porque la API no respondió.
@@ -828,8 +939,13 @@ async function onCountryClick(evt) {
     let historicos = null;
     let avanzados = null;
     let seriesAvanzadas = null;
+
     if (window.usuarioLogueado) {
+      const totalPasos = INDICATORS.length + ADVANCED_INDICATORS.length;
+      let pasosHechos = 0;
+      actualizarProgreso(pasosHechos, totalPasos);
       historicos = [];
+
       for (const ind of INDICATORS) {
         try {
           historicos.push(await fetchUltimos10(code, ind.code, name));
@@ -837,26 +953,35 @@ async function onCountryClick(evt) {
           console.error(`No se pudo cargar el historial de ${ind.code}:`, err);
           historicos.push([]);
         }
+
         if (requestId !== countryRequestId) return;
+        actualizarProgreso(++pasosHechos, totalPasos);
       }
+
       // Cada dato avanzado: serie de los últimos 10 años (para el gráfico);
       // el valor actual es el último punto de esa serie.
       avanzados = [];
       seriesAvanzadas = [];
+
       for (const ind of ADVANCED_INDICATORS) {
         const serie = await fetchUltimos10(code, ind.code, name);
         seriesAvanzadas.push(serie);
         avanzados.push(serie.length > 0 ? serie[serie.length - 1] : null);
+
         if (requestId !== countryRequestId) return;
+        actualizarProgreso(++pasosHechos, totalPasos);
       }
     }
 
     renderCountry(name, code, resultados, historicos, avanzados, seriesAvanzadas);
   } catch (err) {
     if (requestId !== countryRequestId) return;
+
     console.error(err);
     const respaldo = await cargarRespaldo();
+
     if (requestId !== countryRequestId) return;
+
     if (respaldo[code]) {
       renderCountryRespaldo(name, code, respaldo[code]);
     } else {
@@ -865,12 +990,235 @@ async function onCountryClick(evt) {
   }
 }
 
+// ---------------------------------------------------------------
+// Nombres en español + buscador de países + cartelito (tooltip).
+// ---------------------------------------------------------------
+
+// Pasa a minúsculas y saca los acentos, para que "perú" encuentre "Peru".
+function normalizarTexto(texto) {
+  return String(texto).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+}
+
+let paisesBuscables = []; // { path, es, en, buscar }
+
+function nombreEnEspanol(path) {
+  try {
+    const nombre = new Intl.DisplayNames(["es"], { type: "region" }).of(path.dataset.id.toUpperCase());
+    if (nombre && nombre !== path.dataset.id.toUpperCase()) return nombre;
+  } catch {
+    // Código de país raro: usamos el nombre original.
+  }
+  return path.dataset.name || path.dataset.id;
+}
+
+function armarIndicePaises() {
+  paisesBuscables = [...document.querySelectorAll("#world-map .country")].map((path) => {
+    const es = nombreEnEspanol(path);
+    const en = path.dataset.name || "";
+    return { path, es, en, buscar: normalizarTexto(`${es} ${en}`) };
+  });
+}
+
+// Cuadro con el país solo: al buscar un país se abre arriba del mapa mundi
+// (que queda de fondo, oscurecido) un cuadrado más chico con la forma del
+// país en grande. Se cierra con la X, con Esc o haciendo click afuera.
+function cerrarPaisAmpliado() {
+  document.getElementById("pais-ampliado")?.remove();
+}
+
+function mostrarPaisAmpliado(pais) {
+  cerrarPaisAmpliado();
+  const mapa = document.getElementById("world-map");
+  const panel = document.querySelector(".map-panel");
+
+  // viewBox ajustado a la forma del país, con un margen alrededor.
+  const caja = pais.path.getBBox();
+  const margen = Math.max(caja.width, caja.height) * 0.08 + 4;
+  const viewBox = `${caja.x - margen} ${caja.y - margen} ${caja.width + margen * 2} ${caja.height + margen * 2}`;
+
+  // Si hay una característica elegida, mostramos el valor del país.
+  const indicador = INDICATORS.find((i) => i.code === window.caracteristicaSeleccionada);
+  let detalle = "";
+  if (indicador) {
+    const valor = valoresDelMapa.get(pais.path.dataset.id.toUpperCase());
+    detalle = valor === undefined
+      ? `${indicador.label}: sin datos`
+      : `${indicador.label}: ${indicador.format(valor)}`;
+  }
+
+  const relleno = pais.path.style.getPropertyValue("--indicator-fill") || "var(--accent)";
+  const overlay = document.createElement("div");
+  overlay.id = "pais-ampliado";
+  overlay.className = "pais-ampliado";
+  // Cubre justo la zona del mapa mundi (no el buscador ni el selector).
+  const rMapa = mapa.getBoundingClientRect();
+  const rPanel = panel.getBoundingClientRect();
+  overlay.style.top = `${rMapa.top - rPanel.top - panel.clientTop}px`;
+  overlay.style.left = `${rMapa.left - rPanel.left - panel.clientLeft}px`;
+  overlay.style.width = `${rMapa.width}px`;
+  overlay.style.height = `${rMapa.height}px`;
+  overlay.innerHTML = `
+    <div class="pais-ampliado-caja" role="dialog" aria-label="${pais.es}">
+      <button type="button" class="pais-ampliado-cerrar" aria-label="Cerrar">✕</button>
+      <h3 class="pais-ampliado-titulo">${pais.es}</h3>
+      ${detalle ? `<p class="pais-ampliado-detalle">${detalle}</p>` : ""}
+      <svg class="pais-ampliado-svg" viewBox="${viewBox}" preserveAspectRatio="xMidYMid meet"
+           xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Forma de ${pais.es}">
+        <path d="${pais.path.getAttribute("d")}" style="fill: ${relleno}"></path>
+      </svg>
+    </div>`;
+  panel.appendChild(overlay);
+
+  overlay.addEventListener("click", (evt) => {
+    if (evt.target === overlay || evt.target.closest(".pais-ampliado-cerrar")) cerrarPaisAmpliado();
+  });
+}
+
+document.addEventListener("keydown", (evt) => {
+  if (evt.key === "Escape") cerrarPaisAmpliado();
+});
+
+function seleccionarPaisDesdeBuscador(pais) {
+  onCountryClick({ currentTarget: pais.path });
+  mostrarPaisAmpliado(pais);
+}
+
+function ensureBuscador() {
+  if (document.getElementById("buscador-pais")) return;
+
+  const barra = document.createElement("div");
+  barra.className = "buscador-barra";
+  barra.innerHTML = `
+    <label for="buscador-pais">Buscar país:</label>
+    <div class="buscador-caja">
+      <input id="buscador-pais" class="buscador-input" type="search" autocomplete="off"
+             placeholder="Escribí un país, por ejemplo Argentina..."
+             role="combobox" aria-expanded="false" aria-controls="buscador-lista">
+      <ul id="buscador-lista" class="buscador-lista hidden" role="listbox"></ul>
+    </div>`;
+  document.querySelector(".map-panel").insertAdjacentElement("afterbegin", barra);
+
+  const input = document.getElementById("buscador-pais");
+  const lista = document.getElementById("buscador-lista");
+  let resultados = [];
+  let marcado = -1;
+
+  const cerrar = () => {
+    lista.classList.add("hidden");
+    input.setAttribute("aria-expanded", "false");
+    marcado = -1;
+  };
+  const pintarMarcado = () => {
+    [...lista.children].forEach((li, i) => li.classList.toggle("marcado", i === marcado));
+  };
+  const elegir = (pais) => {
+    input.value = pais.es;
+    cerrar();
+    seleccionarPaisDesdeBuscador(pais);
+  };
+  const mostrar = () => {
+    const texto = normalizarTexto(input.value);
+    if (!texto) {
+      cerrar();
+      return;
+    }
+    // Primero los que EMPIEZAN con lo escrito, después los que lo contienen.
+    const empiezan = paisesBuscables.filter((p) => normalizarTexto(p.es).startsWith(texto));
+    const contienen = paisesBuscables.filter(
+      (p) => !empiezan.includes(p) && p.buscar.includes(texto)
+    );
+    resultados = [...empiezan, ...contienen].slice(0, 8);
+    lista.innerHTML = resultados.length
+      ? resultados.map((p, i) => `<li role="option" data-i="${i}">${p.es}</li>`).join("")
+      : `<li class="sin-resultados">No encontramos ese país</li>`;
+    lista.classList.remove("hidden");
+    input.setAttribute("aria-expanded", "true");
+    marcado = resultados.length ? 0 : -1;
+    pintarMarcado();
+  };
+
+  input.addEventListener("input", mostrar);
+  input.addEventListener("focus", mostrar);
+  input.addEventListener("keydown", (evt) => {
+    if (evt.key === "ArrowDown" && resultados.length) {
+      evt.preventDefault();
+      marcado = (marcado + 1) % resultados.length;
+      pintarMarcado();
+    } else if (evt.key === "ArrowUp" && resultados.length) {
+      evt.preventDefault();
+      marcado = (marcado - 1 + resultados.length) % resultados.length;
+      pintarMarcado();
+    } else if (evt.key === "Enter") {
+      evt.preventDefault();
+      if (marcado >= 0 && resultados[marcado]) elegir(resultados[marcado]);
+    } else if (evt.key === "Escape") {
+      cerrar();
+    }
+  });
+  // mousedown (y no click) para que se elija antes de que el input pierda el foco.
+  lista.addEventListener("mousedown", (evt) => {
+    const li = evt.target.closest("li[data-i]");
+    if (li) {
+      evt.preventDefault();
+      elegir(resultados[Number(li.dataset.i)]);
+    }
+  });
+  document.addEventListener("click", (evt) => {
+    if (!barra.contains(evt.target)) cerrar();
+  });
+}
+
+function ensureTooltip() {
+  if (document.getElementById("mapa-tooltip")) return;
+  const tip = document.createElement("div");
+  tip.id = "mapa-tooltip";
+  tip.className = "mapa-tooltip hidden";
+  tip.setAttribute("role", "tooltip");
+  document.body.appendChild(tip);
+
+  const mapa = document.getElementById("world-map");
+  const textoPara = (path) => {
+    const pais = paisesBuscables.find((p) => p.path === path);
+    const nombre = pais ? pais.es : path.dataset.name;
+    const indicador = INDICATORS.find((i) => i.code === window.caracteristicaSeleccionada);
+    if (!indicador) return `<strong>${nombre}</strong>`;
+    const valor = valoresDelMapa.get(path.dataset.id.toUpperCase());
+    return valor === undefined
+      ? `<strong>${nombre}</strong><span>${indicador.label}: sin datos</span>`
+      : `<strong>${nombre}</strong><span>${indicador.label}: ${indicador.format(valor)}</span>`;
+  };
+  const mover = (evt) => {
+    const margen = 14;
+    const ancho = tip.offsetWidth;
+    let x = evt.clientX + margen;
+    if (x + ancho > window.innerWidth - 8) x = evt.clientX - ancho - margen;
+    tip.style.left = `${Math.max(8, x)}px`;
+    tip.style.top = `${evt.clientY + margen}px`;
+  };
+
+  mapa.addEventListener("mousemove", (evt) => {
+    const path = evt.target.closest?.(".country");
+    if (!path) {
+      tip.classList.add("hidden");
+      return;
+    }
+    tip.innerHTML = textoPara(path);
+    tip.classList.remove("hidden");
+    mover(evt);
+  });
+  mapa.addEventListener("mouseleave", () => tip.classList.add("hidden"));
+}
+
 function wireMapEvents() {
   document.querySelectorAll(".country").forEach((path) => {
     path.addEventListener("click", onCountryClick);
   });
+
   ensureAdvancedPanel();
   ensureSelector();
+  armarIndicePaises();
+  ensureBuscador(); // va después del selector para quedar arriba de todo
+  ensureTooltip();
 }
 
 document.addEventListener("DOMContentLoaded", wireMapEvents);
@@ -880,5 +1228,6 @@ document.addEventListener("DOMContentLoaded", wireMapEvents);
 // aparezcan/desaparezcan los datos avanzados sin tener que reclickear.
 window.addEventListener("authchange", () => {
   mostrarOcultarSelector();
+
   if (activePath) onCountryClick({ currentTarget: activePath });
 });

@@ -835,11 +835,17 @@ function descargarHistorialCSV(name, code, historicos, avanzados, seriesAvanzada
   URL.revokeObjectURL(url);
 }
 
-// MIDP-24: el usuario premium le manda directamente a los creadores la
-// sugerencia de un dato nuevo. Abre el programa de mail del usuario con
-// el mensaje ya escrito.
+// MIDP-24 / MIDP-34 / MIDP-23: el usuario premium le manda a los creadores
+// la sugerencia de un dato nuevo. Abre Gmail en una pestaña nueva con el
+// mensaje ya escrito, dirigido al administrador (ADMIN_EMAIL, en auth.js) y
+// con copia al mail del usuario. El usuario solo tiene que apretar "Enviar".
+//
+// Antes usábamos "mailto:", que necesita un programa de correo instalado en
+// la compu: si no hay ninguno, el botón parecía no hacer nada. Gmail en el
+// navegador funciona en cualquier compu.
 function enviarSugerencia(texto) {
   const mensaje = texto.trim();
+  const estado = document.getElementById("suggest-status");
 
   if (!mensaje) {
     alert("Escribí primero qué dato nuevo querés sugerir.");
@@ -853,9 +859,29 @@ function enviarSugerencia(texto) {
   const emailUsuario = auth.currentUser ? auth.currentUser.email : "";
   const cuerpo = `${mensaje}\n\nUsuario premium: ${emailUsuario}`;
 
-  window.location.href =
-    `mailto:${ADMIN_EMAIL}?cc=${encodeURIComponent(emailUsuario)}` +
-    `&subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`;
+  const parametros = new URLSearchParams({
+    view: "cm",
+    fs: "1",
+    to: ADMIN_EMAIL,
+    su: asunto,
+    body: cuerpo,
+  });
+  if (emailUsuario) parametros.set("cc", emailUsuario);
+
+  const ventana = window.open(`https://mail.google.com/mail/?${parametros}`, "_blank");
+
+  if (ventana === null) {
+    // El navegador bloqueó la ventana nueva: probamos con el programa de correo.
+    window.location.href =
+      `mailto:${ADMIN_EMAIL}?cc=${encodeURIComponent(emailUsuario)}` +
+      `&subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`;
+    return;
+  }
+
+  if (estado) {
+    estado.textContent =
+      "✅ Se abrió Gmail en otra pestaña con tu sugerencia lista. Apretá «Enviar» allá para completar el envío.";
+  }
 }
 
 // resultados: los 3 datos básicos (array paralelo a INDICATORS)
@@ -995,7 +1021,8 @@ function renderCountry(name, code, resultados, historicos, avanzados, seriesAvan
          <textarea id="suggest-text" rows="3"
            placeholder="Contanos qué dato te gustaría ver en el mapa..."
            style="width:100%;margin-top:8px;background:var(--bg);border:1px solid var(--panel-border);color:var(--text);font-family:var(--body);font-size:13px;padding:8px;border-radius:4px;resize:vertical;"></textarea>
-         <button id="suggest-btn" class="retry-btn">✉ Enviar sugerencia</button>`
+         <button id="suggest-btn" class="retry-btn">✉ Enviar sugerencia</button>
+         <p id="suggest-status" class="chart-note" role="status"></p>`
       : `<div class="locked-msg">
            ⭐ Descargar el historial en CSV y sugerir datos nuevos a los
            creadores son funciones solo para usuarios premium.

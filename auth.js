@@ -12,7 +12,7 @@ const auth = firebase.auth();
 // COMPLETÁ ESTAS DOS LÍNEAS con los emails reales (en minúsculas):
 const PREMIUM_EMAILS = ["albatatianaperalta2013@gmail.com"];
 // Mail del administrador de la página, a donde llegan las sugerencias:
-const ADMIN_EMAIL = "admin@ejemplo.com";
+const ADMIN_EMAIL = "pablo.cau15@gmail.com";
 
 function mostrarLogueado(email) {
   document.getElementById("auth-logged-out").classList.add("hidden");

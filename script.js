@@ -78,6 +78,8 @@ let countryRequestId = 0;
 let choroplethRequestId = 0;
 let valoresDelMapa = new Map(); // código de país -> valor de la característica elegida
 let riskProxyPromise = null;
+let modoDaltonicos = false;
+let escalaMapa = "raiz";
 
 // MIDP-21/22: el panel de datos avanzados va del lado izquierdo, debajo
 // del mapa. En vez de agregarlo a mano en index.html, lo creamos acá con
@@ -476,43 +478,65 @@ function aplicarResaltado() {
   });
 }
 
-// Escala de color apta para daltónicos (tipo "viridis"): va de violeta
-// (valor menor) a amarillo (valor mayor) pasando por azul y verde. Se
-// distingue bien con todos los tipos de daltonismo, a diferencia del
-// rojo-verde que usábamos antes. Ver también .choropleth-gradient en style.css.
-const PALETA_DALTONICOS = ["#46327E", "#365C8D", "#277F8E", "#1FA187", "#4AC16D", "#9FDA3A", "#FDE725"];
+const PALETA_NORMAL = ["#18A66A", "#D62F2F"];
+const PALETA_DALTONICOS = ["#35BDEB", "#D313A5"];
 
-function colorEnPaleta(proporcion) {
-  const tramos = PALETA_DALTONICOS.length - 1;
-  const posicion = Math.max(0, Math.min(1, proporcion)) * tramos;
-  const i = Math.min(Math.floor(posicion), tramos - 1);
-  const t = posicion - i;
+function colorEnPaleta(proporcion, paleta) {
+  const t = Math.max(0, Math.min(1, proporcion));
   const canal = (hex, k) => parseInt(hex.slice(1 + 2 * k, 3 + 2 * k), 16);
   const mezcla = (k) =>
-    Math.round(canal(PALETA_DALTONICOS[i], k) * (1 - t) + canal(PALETA_DALTONICOS[i + 1], k) * t);
+    Math.round(canal(paleta[0], k) * (1 - t) + canal(paleta[1], k) * t);
   const hexadecimal = (n) => n.toString(16).padStart(2, "0").toUpperCase();
   return `#${hexadecimal(mezcla(0))}${hexadecimal(mezcla(1))}${hexadecimal(mezcla(2))}`;
 }
 
+function colorParaProporcion(proporcion) {
+  const esInflacion = window.caracteristicaSeleccionada === "FP.CPI.TOTL.ZG";
+  const riesgo = esInflacion ? proporcion : 1 - proporcion;
+  const riesgoLimitado = Math.max(0, Math.min(1, riesgo));
+  const proporcionEscalada = escalaMapa === "raiz"
+    ? Math.sqrt(riesgoLimitado)
+    : escalaMapa === "cuadratica"
+      ? riesgoLimitado <= 0.5
+        ? 2 * riesgoLimitado ** 2
+        : 1 - 2 * (1 - riesgoLimitado) ** 2
+      : riesgoLimitado;
+  const paleta = modoDaltonicos ? PALETA_DALTONICOS : PALETA_NORMAL;
+  return colorEnPaleta(proporcionEscalada, paleta);
+}
+
 function colorParaValor(valor, valoresOrdenados) {
-  // MIDP-11/13: escala entre el valor mínimo y el máximo (colores aptos para
-  // daltónicos). MIDP-12: la inflación va invertida.
-  // No usamos la posición en el ranking: el color depende del valor real.
+  // La escala logarítmica comprime diferencias extremas sin perder el orden.
   if (valoresOrdenados.length === 0) return "#33505f";
 
-  const minimo = valoresOrdenados[0];
-  const maximo = valoresOrdenados[valoresOrdenados.length - 1];
+  const transformar = (numero) =>
+    escalaMapa === "log" ? Math.sign(numero) * Math.log1p(Math.abs(numero)) : numero;
+  const minimo = transformar(valoresOrdenados[0]);
+  const maximo = transformar(valoresOrdenados[valoresOrdenados.length - 1]);
 
   // Si todos los países tienen el mismo valor, usamos un color intermedio.
   const proporcion = maximo === minimo
     ? 0.5
-    : Math.max(0, Math.min(1, (valor - minimo) / (maximo - minimo)));
+    : Math.max(0, Math.min(1, (transformar(valor) - minimo) / (maximo - minimo)));
 
-  // MIDP-12: la inflación usa escala invertida (baja inflación = amarillo,
-  // el extremo "bueno" de la paleta; alta inflación = violeta).
-  // Reservas y población mantienen la escala original.
-  const esInflacion = window.caracteristicaSeleccionada === "FP.CPI.TOTL.ZG";
-  return colorEnPaleta(esInflacion ? 1 - proporcion : proporcion);
+  return colorParaProporcion(proporcion);
+}
+
+function actualizarColoresMapa() {
+  const valoresOrdenados = [...valoresDelMapa.values()].sort((a, b) => a - b);
+
+  document.querySelectorAll("#world-map .country").forEach((pais) => {
+    const valor = valoresDelMapa.get(pais.dataset.id.toUpperCase());
+
+    if (valor === undefined) {
+      pais.classList.remove("has-indicator-value");
+      pais.style.removeProperty("--indicator-fill");
+      return;
+    }
+
+    pais.classList.add("has-indicator-value");
+    pais.style.setProperty("--indicator-fill", colorParaValor(valor, valoresOrdenados));
+  });
 }
 
 function aplicarDatosAlMapa(registros) {
@@ -529,20 +553,24 @@ function aplicarDatosAlMapa(registros) {
   }
 
   valoresDelMapa = valoresPorPais; // lo usa el cartelito al pasar el mouse
-  const valoresOrdenados = [...valoresPorPais.values()].sort((a, b) => a - b);
+  actualizarColoresMapa();
+}
 
-  document.querySelectorAll("#world-map .country").forEach((pais) => {
-    const valor = valoresPorPais.get(pais.dataset.id.toUpperCase());
+function actualizarLeyenda() {
+  const esInflacion = window.caracteristicaSeleccionada === "FP.CPI.TOTL.ZG";
+  const minimo = document.getElementById("legend-min");
+  const maximo = document.getElementById("legend-max");
+  const gradiente = document.getElementById("legend-gradient");
+  if (!minimo || !maximo || !gradiente) return;
 
-    if (valor === undefined) {
-      pais.classList.remove("has-indicator-value");
-      pais.style.removeProperty("--indicator-fill");
-      return;
-    }
-
-    pais.classList.add("has-indicator-value");
-    pais.style.setProperty("--indicator-fill", colorParaValor(valor, valoresOrdenados));
+  minimo.textContent = esInflacion ? "Menor inflación" : "Menor valor";
+  maximo.textContent = esInflacion ? "Mayor inflación" : "Mayor valor";
+  const colores = Array.from({ length: 11 }, (_, indice) => {
+    const proporcion = indice / 10;
+    const color = colorParaProporcion(proporcion);
+    return `${color} ${proporcion * 100}%`;
   });
+  gradiente.style.background = `linear-gradient(to right, ${colores.join(", ")})`;
 }
 
 async function colorearPaises(indicatorCode, info) {
@@ -609,7 +637,13 @@ function ensureSelector() {
       ${INDICATORS.map((ind) => `<option value="${ind.code}">${ind.label}</option>`).join("")}
     </select>
     <span id="caracteristica-info" class="selector-info" aria-live="polite"></span>
-    <span class="choropleth-legend" id="choropleth-legend" aria-label="Escala de colores">
+    <label for="map-scale-select">Escala:</label>
+    <select id="map-scale-select" class="selector-select" aria-label="Escala de colores del mapa">
+      <option value="raiz">Raíz cuadrada</option>
+      <option value="log">Logarítmica</option>
+      <option value="cuadratica">Cuadrática por tramos</option>
+    </select>
+    <span class="choropleth-legend" id="choropleth-legend" aria-label="Leyenda de colores">
       <span id="legend-min">Menor valor</span>
       <span class="choropleth-gradient" id="legend-gradient" aria-hidden="true"></span>
       <span id="legend-max">Mayor valor</span>
@@ -620,20 +654,15 @@ function ensureSelector() {
   const select = document.getElementById("caracteristica-select");
   const info = document.getElementById("caracteristica-info");
 
+  document.getElementById("map-scale-select").addEventListener("change", (event) => {
+    escalaMapa = event.currentTarget.value;
+    actualizarLeyenda();
+    actualizarColoresMapa();
+  });
+
   select.addEventListener("change", () => {
-        const esInflacion = select.value === "FP.CPI.TOTL.ZG";
-
-    document.getElementById("legend-min").textContent =
-      esInflacion ? "Menor inflación" : "Menor valor";
-
-    document.getElementById("legend-max").textContent =
-      esInflacion ? "Mayor inflación" : "Mayor valor";
-
-    document.getElementById("legend-gradient").style.background =
-      esInflacion
-        ? "linear-gradient(to right, #FDE725, #9FDA3A, #4AC16D, #1FA187, #277F8E, #365C8D, #46327E)"
-        : "linear-gradient(to right, #46327E, #365C8D, #277F8E, #1FA187, #4AC16D, #9FDA3A, #FDE725)";
     window.caracteristicaSeleccionada = select.value || null;
+    actualizarLeyenda();
     colorearPaises(window.caracteristicaSeleccionada, info);
     aplicarResaltado();
     window.dispatchEvent(
@@ -641,7 +670,33 @@ function ensureSelector() {
     );
   });
 
+  actualizarLeyenda();
   mostrarOcultarSelector();
+}
+
+function ensureColorModeToggle() {
+  if (document.getElementById("color-mode-toggle")) return;
+
+  const controls = document.createElement("div");
+  controls.className = "map-accessibility-controls";
+  controls.innerHTML = `
+    <button type="button" id="color-mode-toggle" class="color-mode-toggle" aria-pressed="false">
+      BOTÓN DALTÓNICOS
+    </button>`;
+  document.querySelector(".map-panel").insertAdjacentElement("afterbegin", controls);
+
+  const button = document.getElementById("color-mode-toggle");
+  button.addEventListener("click", () => {
+    modoDaltonicos = !modoDaltonicos;
+    button.textContent = modoDaltonicos ? "BOTÓN NORMAL" : "BOTÓN DALTÓNICOS";
+    button.setAttribute("aria-pressed", String(modoDaltonicos));
+    button.setAttribute(
+      "aria-label",
+      modoDaltonicos ? "Cambiar a la paleta normal" : "Cambiar a la paleta para daltónicos"
+    );
+    actualizarLeyenda();
+    actualizarColoresMapa();
+  });
 }
 
 // El selector "Característica a destacar" es solo para usuarios registrados:
@@ -1427,6 +1482,7 @@ function wireMapEvents() {
 
   ensureAdvancedPanel();
   ensureSelector();
+  ensureColorModeToggle();
   armarIndicePaises();
   ensureBuscador(); // va después del selector para quedar arriba de todo
   ensureTooltip();

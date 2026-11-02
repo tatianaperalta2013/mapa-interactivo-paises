@@ -671,7 +671,6 @@ function ensureSelector() {
   });
 
   actualizarLeyenda();
-  mostrarOcultarSelector();
 }
 
 function ensureColorModeToggle() {
@@ -697,25 +696,6 @@ function ensureColorModeToggle() {
     actualizarLeyenda();
     actualizarColoresMapa();
   });
-}
-
-// El selector "Característica a destacar" es solo para usuarios registrados:
-// sin sesión iniciada no se ve, y si estaba usando una característica la
-// sacamos para que el mapa vuelva a su color normal.
-function mostrarOcultarSelector() {
-  const barra = document.querySelector(".selector-barra");
-  if (!barra) return;
-
-  const logueado = !!window.usuarioLogueado;
-  barra.style.display = logueado ? "" : "none";
-
-  if (!logueado) {
-    const select = document.getElementById("caracteristica-select");
-    if (select && select.value) {
-      select.value = "";
-      select.dispatchEvent(new Event("change"));
-    }
-  }
 }
 
 // MIDP-19 / MIDP-24: SIEMPRE los últimos 10 años de cada dato, y gráfico
@@ -1494,7 +1474,5 @@ document.addEventListener("DOMContentLoaded", wireMapEvents);
 // si ya había un país seleccionado, lo volvemos a cargar para que
 // aparezcan/desaparezcan los datos avanzados sin tener que reclickear.
 window.addEventListener("authchange", () => {
-  mostrarOcultarSelector();
-
   if (activePath) onCountryClick({ currentTarget: activePath });
 });
